@@ -52,6 +52,11 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /**
+             * Vehicle Label
+             * @default null
+             */
+            vehicle_label: string | null;
         };
         /** AccountSummary */
         AccountSummary: {
@@ -592,6 +597,11 @@ export interface components {
             /** Slug */
             slug: string;
             state: components["schemas"]["ReportState"];
+            /**
+             * Vehicle Label
+             * @default null
+             */
+            vehicle_label: string | null;
         };
         /** LockedZoneSummary */
         LockedZoneSummary: {
@@ -694,6 +704,11 @@ export interface components {
             /** Slug */
             slug: string;
             state: components["schemas"]["ReportState"];
+            /**
+             * Vehicle Label
+             * @default null
+             */
+            vehicle_label: string | null;
         };
         /**
          * Part1Verdict
@@ -747,6 +762,18 @@ export interface components {
             reason: string | null;
             state: components["schemas"]["PartState"];
             zone: components["schemas"]["Zone"];
+        };
+        /** PasswordResetConfirmRequest */
+        PasswordResetConfirmRequest: {
+            /** New Password */
+            new_password: string;
+            /** Token */
+            token: string;
+        };
+        /** PasswordResetRequest */
+        PasswordResetRequest: {
+            /** Email */
+            email: string;
         };
         /**
          * PrivacyState
@@ -988,12 +1015,45 @@ export interface components {
              */
             session_id: string;
             state: components["schemas"]["SessionState"];
+            /**
+             * Vehicle Label
+             * @default null
+             */
+            vehicle_label: string | null;
         };
         /**
          * SessionState
          * @enum {string}
          */
         SessionState: "capturing" | "finalized" | "deleting" | "deleted";
+        /** ShareDisableResponse */
+        ShareDisableResponse: {
+            /**
+             * Share Enabled
+             * @default false
+             * @constant
+             */
+            share_enabled: false;
+        };
+        /**
+         * ShareEnableResponse
+         * @description Owner-only share enable result. `url` is the existing public report
+         *     path (`/r/{slug}`); `public_access_active` is
+         *     `settings.public_sharing_enabled and share_enabled`, so callers can tell
+         *     whether the link actually opens today while the global gate is off.
+         */
+        ShareEnableResponse: {
+            /** Public Access Active */
+            public_access_active: boolean;
+            /**
+             * Share Enabled
+             * @default true
+             * @constant
+             */
+            share_enabled: true;
+            /** Url */
+            url: string;
+        };
         /** SkipPartResponse */
         SkipPartResponse: {
             /**
@@ -1017,6 +1077,11 @@ export interface components {
         UpdateListingResponse: {
             /** Listing Version */
             listing_version: number;
+        };
+        /** UpdateVehicleLabelRequest */
+        UpdateVehicleLabelRequest: {
+            /** Label */
+            label: string;
         };
         /** UploadedPiece */
         UploadedPiece: {

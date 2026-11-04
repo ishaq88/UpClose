@@ -437,7 +437,7 @@ def test_free_dto_from_snapshot_has_no_other_zone_or_paid_content(make, media_di
     assert not any(pid in blob for pid in passenger_ids) and all(did in blob for did in driver_ids)
     assert {f.zone.value for f in free.findings} == {"driver_side"} and free.scope == "free"
     assert [(z.zone.value, z.finding_count) for z in free.locked_zones] == [("passenger_side", 1)] and free.part1_score is not None
-    assert set(json.loads(blob)) == {"scope", "slug", "revision_id", "state", "coverage", "part1_score", "findings",
+    assert set(json.loads(blob)) == {"scope", "slug", "revision_id", "state", "vehicle_label", "coverage", "part1_score", "findings",
                                      "locked_zones", "part1_summary"}
     assert not {"scores", "repairs", "claims", "narration", "headline"} & set(json.loads(blob))
     assert [c.zone.value for c in free.coverage] == ["driver_side"]

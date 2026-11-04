@@ -68,6 +68,20 @@
           "format": "date-time",
           "title": "Updated At",
           "type": "string"
+        },
+        "vehicle_label": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vehicle Label"
         }
       },
       "required": [
@@ -1365,6 +1379,20 @@
         },
         "state": {
           "$ref": "#/$defs/ReportState"
+        },
+        "vehicle_label": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vehicle Label"
         }
       },
       "required": [
@@ -1652,6 +1680,20 @@
         },
         "state": {
           "$ref": "#/$defs/ReportState"
+        },
+        "vehicle_label": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vehicle Label"
         }
       },
       "required": [
@@ -1806,6 +1848,43 @@
         "state"
       ],
       "title": "PartSummary",
+      "type": "object"
+    },
+    "PasswordResetConfirmRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "new_password": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "New Password",
+          "type": "string"
+        },
+        "token": {
+          "maxLength": 1024,
+          "title": "Token",
+          "type": "string"
+        }
+      },
+      "required": [
+        "token",
+        "new_password"
+      ],
+      "title": "PasswordResetConfirmRequest",
+      "type": "object"
+    },
+    "PasswordResetRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "email": {
+          "maxLength": 320,
+          "title": "Email",
+          "type": "string"
+        }
+      },
+      "required": [
+        "email"
+      ],
+      "title": "PasswordResetRequest",
       "type": "object"
     },
     "PrivacyState": {
@@ -2489,6 +2568,20 @@
         },
         "state": {
           "$ref": "#/$defs/SessionState"
+        },
+        "vehicle_label": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vehicle Label"
         }
       },
       "required": [
@@ -2512,6 +2605,47 @@
       ],
       "title": "SessionState",
       "type": "string"
+    },
+    "ShareDisableResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "share_enabled": {
+          "const": false,
+          "default": false,
+          "title": "Share Enabled",
+          "type": "boolean"
+        }
+      },
+      "title": "ShareDisableResponse",
+      "type": "object"
+    },
+    "ShareEnableResponse": {
+      "additionalProperties": false,
+      "description": "Owner-only share enable result. `url` is the existing public report\npath (`/r/{slug}`); `public_access_active` is\n`settings.public_sharing_enabled and share_enabled`, so callers can tell\nwhether the link actually opens today while the global gate is off.",
+      "properties": {
+        "public_access_active": {
+          "title": "Public Access Active",
+          "type": "boolean"
+        },
+        "share_enabled": {
+          "const": true,
+          "default": true,
+          "title": "Share Enabled",
+          "type": "boolean"
+        },
+        "url": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "public_access_active"
+      ],
+      "title": "ShareEnableResponse",
+      "type": "object"
     },
     "SkipPartResponse": {
       "additionalProperties": false,
@@ -2574,6 +2708,22 @@
         "listing_version"
       ],
       "title": "UpdateListingResponse",
+      "type": "object"
+    },
+    "UpdateVehicleLabelRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "UpdateVehicleLabelRequest",
       "type": "object"
     },
     "UploadResponse": {
