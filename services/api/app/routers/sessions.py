@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.orm import Session as DBSession, sessionmaker
 
 from app.contracts.api import (CreateSessionRequest, CreateSessionResponse, EmptyRequest,
-    FinalizeResponse, SessionResponse, SkipPartResponse, UpdateListingRequest, UpdateListingResponse)
+    FinalizeResponse, SessionResponse, SkipPartResponse, UpdateListingRequest, UpdateListingResponse,
+    UpdateVehicleLabelRequest)
 from app.services.account_auth import authenticate_account
 from app.services.accounts import AccountService
 from app.services.auth import bearer_token
@@ -60,6 +61,13 @@ def create_session_router(sessions: sessionmaker[DBSession], settings: Settings)
             # linked inspection (404 otherwise); anything else stays 401.
             account = authenticate_account(accounts, authorization)
             return service.get_for_account(account.id, session_id)
+
+    @router.put("/sessions/{session_id}/label", response_model=SessionResponse)
+    def update_label(session_id: UUID, body: UpdateVehicleLabelRequest, token: Annotated[str, Depends(owner_bearer)]) -> SessionResponse:
+        # Owner token only: an account token is not an owner token and fails
+        # owner authentication (401); a valid owner token for another
+        # session follows the existing 404 convention.
+        return service.update_label(token, session_id, body.label)
 
     @router.put("/sessions/{session_id}/listing", response_model=UpdateListingResponse)
     def update_listing(session_id: UUID, body: UpdateListingRequest, token: Annotated[str, Depends(owner_bearer)],

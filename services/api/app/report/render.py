@@ -235,6 +235,7 @@ def _state_notice(state: ReportState) -> str | None:
 def _common_context(report: FreeReport | PaidReport, provenance_label: str | None) -> dict[str, object]:
     return {
         "css": Markup(_CSS),
+        "vehicle_label": report.vehicle_label,
         "provenance_label": provenance_label,
         "state_notice": _state_notice(report.state),
         "revision_short": str(report.revision_id)[:8],
@@ -425,6 +426,6 @@ def render_report(
 def render_report_status(report: ReportStatus) -> str:
     """Limited terminal/building page; no snapshot, score or evidence is read."""
     return _ENV.get_template("status.html").render(
-        css=Markup(_CSS), provenance_label=None, state_notice=_state_notice(report.state),
+        css=Markup(_CSS), vehicle_label=None, provenance_label=None, state_notice=_state_notice(report.state),
         revision_short=str(report.revision_id)[:8], footer_extra=None,
     )

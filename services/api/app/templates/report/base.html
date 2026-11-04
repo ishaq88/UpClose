@@ -5,12 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <meta name="referrer" content="no-referrer">
-<title>UpClose visual condition report</title>
+<title>UpClose visual condition report{% if vehicle_label %} — {{ vehicle_label }}{% endif %}</title>
 <style>{{ css }}</style>
 </head>
 <body>
 <main>
 <h1>UpClose visual condition report</h1>
+{%- if vehicle_label %}
+<p class="vehicle-label">{{ vehicle_label }}</p>
+{%- endif %}
 {%- if provenance_label %}
 <div class="banner warn"><strong>{{ provenance_label }}</strong></div>
 {%- endif %}

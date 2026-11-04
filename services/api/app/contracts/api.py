@@ -1,7 +1,7 @@
 from typing import Annotated, Literal, Self
 from uuid import UUID
 
-from pydantic import AwareDatetime, Field, HttpUrl, model_validator
+from pydantic import AwareDatetime, BeforeValidator, Field, HttpUrl, model_validator
 
 from .base import ContractModel, Count, PartNumber, UTCDateTime
 from .enums import PART_ZONES, PartState, ReportState, SessionState, UploadState, Zone
@@ -29,6 +29,24 @@ class UpdateListingResponse(ContractModel):
     listing_version: Annotated[int, Field(strict=True, ge=1)]
 
 
+def _clean_vehicle_label(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("vehicle label must be text")
+    cleaned = value.strip()
+    if not 1 <= len(cleaned) <= 80:
+        raise ValueError("vehicle label must be 1-80 characters")
+    if any(ord(char) < 32 or ord(char) == 127 for char in cleaned):
+        raise ValueError("vehicle label must not contain control characters")
+    return cleaned
+
+
+VehicleLabel = Annotated[str, BeforeValidator(_clean_vehicle_label), Field(min_length=1, max_length=80)]
+
+
+class UpdateVehicleLabelRequest(ContractModel):
+    label: VehicleLabel
+
+
 class PartSummary(ContractModel):
     id: UUID
     part_no: PartNumber
@@ -53,6 +71,7 @@ class SessionResponse(ContractModel):
     consent_at: UTCDateTime
     listing_text: Annotated[str, Field(max_length=10000)] | None
     listing_version: Annotated[int, Field(strict=True, ge=1)]
+    vehicle_label: Annotated[str, Field(min_length=1, max_length=80)] | None = None
     parts: tuple[PartSummary, ...]
 
 

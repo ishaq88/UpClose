@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DBSession, sessionmaker
 
 from app.contracts.api import (CreateSessionRequest, CreateSessionResponse, FinalizeResponse,
-    PartSummary, SessionResponse, SkipPartResponse, UpdateListingResponse)
+    PartSummary, SessionResponse, SkipPartResponse, UpdateListingResponse, _clean_vehicle_label)
 from app.contracts.accounts import (AccountSessionSummary, AccountSessionsResponse,
     ClaimSessionResponse)
 from app.contracts.enums import PART_ZONES, PartState, SessionState, UploadState
@@ -99,7 +99,8 @@ class SessionService:
                     capture_mode=owner.capture_mode, created_at=owner.created_at,
                     updated_at=owner.updated_at, part_state_counts=counts,
                     report_state=report_state,
-                    report_slug=report.share_slug if report is not None else None))
+                    report_slug=report.share_slug if report is not None else None,
+                    vehicle_label=owner.vehicle_label))
             return AccountSessionsResponse(sessions=tuple(summaries))
 
     @staticmethod
@@ -107,9 +108,24 @@ class SessionService:
             parts = db.scalars(select(Part).where(Part.session_id == owner.id).order_by(Part.part_no)).all()
             return SessionResponse(session_id=owner.id, purpose=owner.purpose, state=owner.state, capture_mode=owner.capture_mode,
                 consent_at=owner.consent_at, listing_text=owner.listing_text, listing_version=owner.listing_version,
+                vehicle_label=owner.vehicle_label,
                 parts=tuple(PartSummary(id=part.id, part_no=part.part_no, zone=part.zone, state=part.state,
                                        reason=part.failure_reason, active_upload_id=part.active_upload_id)
                             for part in parts))
+
+    def update_label(self, token: str, session_id: UUID, label: str) -> SessionResponse:
+        try:
+            cleaned = _clean_vehicle_label(label)
+        except ValueError:
+            raise validation() from None
+        with self.sessions.begin() as db:
+            owner = owner_session(db, token, session_id, lock=True)
+            # Display name only: settable while capturing and after finalize;
+            # never touches listing_text/listing_version. Deleting/deleted
+            # sessions already 404 via owner_session.
+            owner.vehicle_label = cleaned
+            db.flush()
+            return self._response(db, owner)
 
     def update_listing(self, token: str, session_id: UUID, listing_text: str,
                        idempotency_key: str | None) -> UpdateListingResponse:
