@@ -4,13 +4,13 @@ from .api import (
     CreateUploadRequest, CreateUploadResponse, DeleteMediaResponse, EmptyRequest,
     FinalizeResponse, PartAcceptedResponse, PartSummary, Problem, ProgressResponse,
     ReportProgress, SessionResponse, SkipPartResponse, UpdateListingRequest,
-    UpdateListingResponse, UploadResponse, UploadUrl, UploadUrlsRequest,
+    UpdateListingResponse, UpdateVehicleLabelRequest, UploadResponse, UploadUrl, UploadUrlsRequest,
     UploadUrlsResponse, UploadedPiece,
 )
 from .accounts import (
     AccountSessionSummary, AccountSessionsResponse, AccountSummary, AuthResponse,
     ChangePasswordRequest, ClaimSessionRequest, ClaimSessionResponse, LoginRequest,
-    RegisterRequest,
+    PasswordResetConfirmRequest, PasswordResetRequest, RegisterRequest,
 )
 from .base import ContractModel, FixtureMetadata
 from .video import (VideoRange, CreateVideoUploadRequest, CreateVideoUploadResponse,
@@ -26,7 +26,7 @@ from .evidence import (
 )
 from .reports import (
     FreeFinding, FreeReport, LockedZoneSummary, PaidFinding, PaidReport, Part1Verdict, PublicCoverage,
-    PublicFinding, PublicClaim, ReportStatus,
+    PublicFinding, PublicClaim, ReportStatus, ShareDisableResponse, ShareEnableResponse,
 )
 from .scoring import RepairEstimate, RepairSummary, ScoreResult, ScoringInput, ZoneScore
 

@@ -64,11 +64,23 @@ class Settings(BaseSettings):
     account_token_ttl_seconds: int = Field(default=30 * 24 * 3600, ge=1)
     account_login_max_failures: int = Field(default=5, ge=1)
     account_pbkdf2_iterations: int = Field(default=600_000, ge=1)
+    # Email (password reset): fixture by default writes to a local dev outbox file.
+    # "live" activates SMTP only when host and sender are both configured; any
+    # partial live config falls back to the dev outbox (see app.adapters.email).
+    email_mode: Literal["fixture", "live"] = "fixture"
+    email_outbox_path: str = ""
+    email_from_address: str | None = None
+    email_smtp_host: str | None = None
+    email_smtp_port: int = Field(default=587, ge=1, le=65535)
+    email_smtp_username: str | None = None
+    email_smtp_password: SecretStr | None = None
+    email_smtp_use_tls: bool = True
     stripe_report_price_id: str | None = None
     report_price_cents: Literal[1900] = 1900  # the purchases table check currently fixes $19.00
 
     @field_validator("stripe_secret_key", "stripe_webhook_secret", "stripe_report_price_id", "demo_session_id",
-                      "model_api_key", "model_standard_access_receipt", mode="before")
+                      "model_api_key", "model_standard_access_receipt", "email_from_address", "email_smtp_host",
+                      "email_smtp_username", "email_smtp_password", mode="before")
     @classmethod
     def blank_is_unset(cls, value: object) -> object:
         return None if isinstance(value, str) and not value.strip() else value

@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session as DBSession, sessionmaker
 
+from app.adapters.email import EmailSender
 from app.adapters.storage import ObjectStorage, S3Storage
 from app.adapters.session_storage import fenced_storage
 from app.adapters.stripe import StripeGateway, build_gateway
@@ -30,7 +31,7 @@ from app.settings import Settings
 def create_app(
     settings: Settings | None = None, *, database_probe: DatabaseProbe = database_ready,
     session_factory: sessionmaker[DBSession] | None = None, storage: ObjectStorage | None = None,
-    payments: StripeGateway | None = None,
+    payments: StripeGateway | None = None, email_sender: EmailSender | None = None,
 ) -> FastAPI:
     config = settings or Settings()
     if config.model_api_key is not None:
@@ -38,7 +39,7 @@ def create_app(
     application = FastAPI(title="UpClose API", version="0.1.0")
     sessions = session_factory or create_session_factory(config.database_url.get_secret_value())
     object_storage = fenced_storage(sessions, storage or S3Storage(config))
-    application.include_router(create_account_router(sessions, config))
+    application.include_router(create_account_router(sessions, config, email_sender))
     application.include_router(create_session_router(sessions, config))
     application.include_router(create_progress_router(sessions, config))
     application.include_router(create_report_router(sessions, config, object_storage))

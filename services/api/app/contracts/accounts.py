@@ -23,6 +23,19 @@ class ChangePasswordRequest(ContractModel):
     new_password: Annotated[str, Field(min_length=1, max_length=1024)]
 
 
+class PasswordResetRequest(ContractModel):
+    # Deliberately permissive: malformed addresses get the same 202 as
+    # unknown ones, so the endpoint cannot enumerate accounts.
+    email: Annotated[str, Field(max_length=320)]
+
+
+class PasswordResetConfirmRequest(ContractModel):
+    # Length/format failures map to the generic reset_token_invalid problem
+    # in the service, not a distinguishing contract error.
+    token: Annotated[str, Field(max_length=1024)]
+    new_password: Annotated[str, Field(min_length=1, max_length=1024)]
+
+
 class AccountSummary(ContractModel):
     id: UUID
     email: Annotated[str, Field(min_length=3, max_length=320)]
@@ -60,6 +73,7 @@ class AccountSessionSummary(ContractModel):
     part_state_counts: dict[str, Count]
     report_state: ReportState | None = None
     report_slug: Annotated[str, Field(min_length=1, max_length=128)] | None = None
+    vehicle_label: Annotated[str, Field(min_length=1, max_length=80)] | None = None
 
 
 class AccountSessionsResponse(ContractModel):

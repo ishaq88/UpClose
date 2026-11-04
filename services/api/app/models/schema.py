@@ -54,13 +54,15 @@ class Session(Record, Base):
     listing_text: Mapped[str | None] = mapped_column(Text)
     listing_version: Mapped[int] = mapped_column(Integer, server_default="1")
     state: Mapped[SessionState] = mapped_column(enum_type(SessionState, "session_state"), server_default="capturing")
+    vehicle_label: Mapped[str | None] = mapped_column(String(80))
     finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     parts: Mapped[list[Part]] = relationship(back_populates="session", foreign_keys="Part.session_id")
     __table_args__ = (CheckConstraint("token_hash ~ '^[0-9a-f]{64}$'", name="token_hash"),
         CheckConstraint("length(consent_version) > 0", name="consent_version"),
         CheckConstraint("listing_text IS NULL OR length(listing_text) <= 10000", name="listing_length"),
-        CheckConstraint("listing_version >= 1", name="listing_version"))
+        CheckConstraint("listing_version >= 1", name="listing_version"),
+        CheckConstraint("vehicle_label IS NULL OR length(vehicle_label) BETWEEN 1 AND 80", name="vehicle_label_length"))
 
 
 class Part(Record, Base):
@@ -450,6 +452,29 @@ class Account(Record, Base):
     __table_args__ = (CheckConstraint("email = lower(email) AND email = btrim(email) AND length(email) BETWEEN 3 AND 320 AND email ~ '^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$'", name="email_shape"),
         CheckConstraint("password_salt ~ '^[0-9a-f]{64}$'", name="password_salt"),
         CheckConstraint("length(password_hash) > 0", name="password_hash"))
+
+
+class PasswordResetToken(Record, Base):
+    """Single-use password-reset credential; only its SHA-256 hash persists.
+
+    The plaintext token is sent once by email and never stored or logged.
+    A token is unusable once ``used_at`` is set or ``expires_at`` has passed;
+    issuing a new token marks every earlier unused token used.
+    """
+
+    __tablename__ = "password_reset_tokens"
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("accounts.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    account: Mapped[Account] = relationship()
+
+    def __repr__(self) -> str:  # never include the token hash
+        return f"PasswordResetToken(id={self.id!r}, account_id={self.account_id!r})"
+
+    __table_args__ = (CheckConstraint("token_hash ~ '^[0-9a-f]{64}$'", name="token_hash"),
+        CheckConstraint("expires_at > created_at", name="token_expiry"),
+        CheckConstraint("used_at IS NULL OR used_at >= created_at", name="token_used"))
 
 
 class AccountToken(Record, Base):
