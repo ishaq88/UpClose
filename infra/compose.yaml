@@ -3,6 +3,7 @@ x-server-environment: &server-environment
   DATABASE_URL: postgresql+psycopg://upclose:local-development-only@postgres:5432/upclose
   APP_BASE_URL: ${APP_BASE_URL:-http://localhost:5173}
   WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:5173}
+  WEB_EXTRA_ORIGINS: ${WEB_EXTRA_ORIGINS:-}
   S3_BUCKET: ${S3_BUCKET:-upclose-local}
   S3_INTERNAL_ENDPOINT: http://floci:4566
   S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:4566}
@@ -28,7 +29,7 @@ services:
       retries: 20
   floci:
     image: floci/floci:1.6.0@sha256:eab36252ea43a4a73928423f0372219052c5c6f87207f6c4754db14b91d6ed30
-    ports: ["127.0.0.1:4566:4566"]
+    ports: ["${STORAGE_BIND:-127.0.0.1}:4566:4566"]
     environment:
       FLOCI_STORAGE_MODE: persistent
       FLOCI_STORAGE_PERSISTENT_PATH: /app/data
@@ -43,6 +44,7 @@ services:
       AWS_EC2_METADATA_DISABLED: "true"
       S3_BUCKET: ${S3_BUCKET:-upclose-local}
       WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:5173}
+      WEB_EXTRA_ORIGINS: ${WEB_EXTRA_ORIGINS:-}
     volumes: ["./init-storage.sh:/init/init-storage.sh:ro"]
     depends_on: [floci]
   api:
@@ -81,7 +83,7 @@ services:
       dockerfile: infra/web.Dockerfile
     environment:
       API_PROXY_TARGET: http://api:8000
-    ports: ["127.0.0.1:5173:5173"]
+    ports: ["${WEB_BIND:-127.0.0.1}:5173:5173"]
     depends_on:
       api: {condition: service_healthy}
 volumes:

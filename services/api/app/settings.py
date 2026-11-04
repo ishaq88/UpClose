@@ -1,11 +1,46 @@
 """Server settings; the API process must never receive the Meta key (worker-only)."""
 
 from typing import Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import ipaddress
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _validate_web_origin(origin: str) -> str:
+    """Return a normalized http(s) origin, rejecting anything with a path or credentials."""
+    if any(char.isspace() for char in origin) or "\\" in origin:
+        raise ValueError(
+            f"Invalid WEB_EXTRA_ORIGINS origin {origin!r}: must be an http(s) origin "
+            "without a path, query, or fragment (for example http://192.168.1.16:5173)"
+        )
+    try:
+        parts = urlsplit(origin)
+        port = parts.port
+    except ValueError:
+        raise ValueError(
+            f"Invalid WEB_EXTRA_ORIGINS origin {origin!r}: must be an http(s) origin "
+            "without a path, query, or fragment (for example http://192.168.1.16:5173)"
+        ) from None
+    if (
+        parts.scheme not in {"http", "https"}
+        or not parts.hostname
+        or parts.username
+        or parts.password
+        or parts.path not in {"", "/"}
+        or parts.query
+        or parts.fragment
+    ):
+        raise ValueError(
+            f"Invalid WEB_EXTRA_ORIGINS origin {origin!r}: must be an http(s) origin "
+            "without a path, query, or fragment (for example http://192.168.1.16:5173)"
+        )
+    host = parts.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"{parts.scheme}://{host}:{port}" if port is not None else f"{parts.scheme}://{host}"
 
 
 class Settings(BaseSettings):
@@ -16,6 +51,11 @@ class Settings(BaseSettings):
     )
     app_base_url: str = "http://localhost:8000"
     web_origin: str = "http://localhost:5173"
+    # Comma-separated extra browser origins for LAN testing, e.g.
+    # WEB_EXTRA_ORIGINS=http://192.168.1.16:5173. Stored as the raw comma string
+    # (pydantic-settings would otherwise expect JSON); use extra_web_origins /
+    # cors_origins for the parsed list. web_origin stays the primary origin.
+    web_extra_origins: str = ""
     s3_bucket: str = "upclose-local"
     s3_internal_endpoint: str = "http://localhost:4566"
     s3_public_endpoint: str = "http://localhost:4566"
@@ -84,6 +124,28 @@ class Settings(BaseSettings):
     @classmethod
     def blank_is_unset(cls, value: object) -> object:
         return None if isinstance(value, str) and not value.strip() else value
+
+    @field_validator("web_extra_origins", mode="before")
+    @classmethod
+    def _coerce_web_extra_origins(cls, value: object) -> object:
+        # Accept a sequence when constructed in code; env input arrives as a comma string.
+        if isinstance(value, (list, tuple)):
+            return ",".join(str(item) for item in value)
+        return value
+
+    @field_validator("web_extra_origins")
+    @classmethod
+    def _validate_web_extra_origins(cls, value: str) -> str:
+        origins = [_validate_web_origin(part.strip()) for part in value.split(",") if part.strip()]
+        return ",".join(dict.fromkeys(origins))
+
+    @property
+    def extra_web_origins(self) -> tuple[str, ...]:
+        return tuple(part for part in self.web_extra_origins.split(",") if part)
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return list(dict.fromkeys([self.web_origin, *self.extra_web_origins]))
 
     @field_validator("trusted_proxy_hosts")
     @classmethod
