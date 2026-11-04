@@ -15,7 +15,8 @@ export default defineConfig(({ mode }) => {
       strictPort: true,
       proxy: {
         '/api/v1': { target },
-        '/r': { target },
+        // Share links only; a bare '/r' prefix would also swallow /report and /reports.
+        '^/r/': { target },
       },
     },
   };

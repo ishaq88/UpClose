@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { FakeBackend } from './testing/fakeBackend';
 
+vi.mock('./capture/Guide3D', () => ({ default: () => null }));
+
 let backend: FakeBackend;
 beforeEach(() => { sessionStorage.clear(); backend = new FakeBackend(); vi.stubGlobal('fetch', backend.fetch); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); });
@@ -22,8 +24,8 @@ describe('flexible capture', () => {
   it('creates the selected mode and reloads it from server state', async () => {
     const view = render(<App />);
     fireEvent.click(screen.getByRole('radio', { name: /One video/ }));
-    fireEvent.click(screen.getByLabelText('I understand and agree.'));
-    fireEvent.click(screen.getByRole('button', { name: 'Start session' }));
+    fireEvent.click(screen.getByLabelText(/I understand and agree/));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue with one video' }));
     await screen.findByRole('heading', { name: 'One video' });
     expect(backend.callsTo('POST', '/sessions')[0]?.body).toMatchObject({ capture_mode: 'single_video' });
     view.unmount(); render(<App />);
@@ -95,9 +97,9 @@ describe('flexible capture', () => {
     await screen.findByText(/Source preparation failed/, {}, { timeout: 3500 });
     expect(screen.getByText(/Its missing areas are not assessed/)).toBeTruthy();
     expect(finish().disabled).toBe(false);
-    const card = screen.getByRole('heading', { name: /Step 2 of 8/ }).closest('li')!;
-    fireEvent.click(within(card).getByRole('button', { name: 'Show guide' }));
-    fireEvent.change(within(card).getByLabelText('Choose a video from this device'), { target: { files: [file()] } });
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Zones' })).getByRole('button', { name: /^Passenger side/ }));
+    const card = screen.getByRole('heading', { level: 3, name: /^Passenger side/ }).closest('article')!;
+    fireEvent.change(within(card).getByLabelText(/Upload passenger side clip/), { target: { files: [file()] } });
     fireEvent.click(await within(card).findByRole('button', { name: 'Upload this clip' }));
     await waitFor(() => expect(backend.parts[1]!.state).toBe('uploaded'));
     expect(backend.callsTo('POST', '/parts')[0]?.body).toMatchObject({ part_no: 2 });

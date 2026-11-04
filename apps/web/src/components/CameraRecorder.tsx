@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
+import '../capture/capture.css';
 import { classifyCameraError, detectCameraSupport, pickRecorderMimeType, type CameraFailure } from '../capture/media';
 
 type CameraState =
@@ -15,10 +16,10 @@ interface Props {
 }
 
 const FAILURE_COPY: Record<CameraFailure, string> = {
-  denied: 'Camera access is blocked for this site. Allow Camera in your browser or phone settings for this site, then press "Open camera" again. You can also use the buttons below to record with your phone\'s own camera app or pick a video.',
-  no_camera: 'No usable camera was found. Use the buttons below to choose a video instead.',
-  busy: 'The camera is in use by another app or tab. Close it and try again, or use the buttons below.',
-  other: 'The camera could not be started. Try again, or use the buttons below to choose a video.',
+  denied: 'Camera access is blocked for this site. Allow Camera in your browser or phone settings for this site, then press "Open camera" again. You can also use the options above to record with your phone\'s own camera app or pick a video.',
+  no_camera: 'No usable camera was found. Use the options above to choose a video instead.',
+  busy: 'The camera is in use by another app or tab. Close it and try again, or use the options above.',
+  other: 'The camera could not be started. Try again, or use the options above to choose a video.',
 };
 
 /** In-page recording with MediaRecorder; the part-specific file inputs are the always-available fallback. */
@@ -118,39 +119,39 @@ export function CameraRecorder({ partNo, maxSeconds, onRecorded }: Props): React
 
   if (support !== 'available') {
     return (
-      <p className="rounded-lg bg-stone-100 p-3 text-sm text-stone-700">
+      <p className="notice cam-note">
         {support === 'insecure_context'
-          ? 'Recording inside this page needs a secure (HTTPS) connection. You can still film with your phone\'s camera app using the buttons below.'
-          : 'This browser cannot record video inside the page. Use the buttons below to film with your camera app or choose a video.'}
+          ? 'Recording inside this page needs a secure (HTTPS) connection. You can still film with your phone\'s camera app using the options above.'
+          : 'This browser cannot record video inside the page. Use the options above to film with your camera app or choose a video.'}
       </p>
     );
   }
 
   const live = state.kind === 'live' || state.kind === 'recording';
   return (
-    <div className="space-y-3">
+    <div className="cam">
       {state.kind === 'failed' && (
-        <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">{FAILURE_COPY[state.reason]}</p>
+        <p role="alert" className="notice notice-warn">{FAILURE_COPY[state.reason]}</p>
       )}
       {live && (
         <video ref={videoRef} autoPlay muted playsInline aria-label={`Live camera preview for ${partNo === 0 ? 'one continuous video' : partNo === 7 ? 'the low underbody sweep' : `part ${partNo}`}`}
-          className="aspect-video w-full rounded-lg bg-stone-900 object-cover" />
+          className="cam-preview" />
       )}
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="cam-row">
         {(state.kind === 'idle' || state.kind === 'failed') && (
-          <button type="button" onClick={() => { void openCamera(); }} className="btn-primary">Open camera</button>
+          <button type="button" onClick={() => { void openCamera(); }} className="btn btn-ghost btn-sm">Open camera</button>
         )}
-        {state.kind === 'starting' && <span className="text-sm text-stone-600" role="status">Waiting for camera permission...</span>}
+        {state.kind === 'starting' && <span className="hint" role="status">Waiting for camera permission...</span>}
         {state.kind === 'live' && (
           <>
-            <button type="button" onClick={startRecording} className="btn-primary">Start recording</button>
-            <button type="button" onClick={closeCamera} className="btn-secondary">Close camera</button>
+            <button type="button" onClick={startRecording} className="btn btn-sm">Start recording</button>
+            <button type="button" onClick={closeCamera} className="textlink">Close camera</button>
           </>
         )}
         {state.kind === 'recording' && (
           <>
-            <button type="button" onClick={stopRecording} className="btn-danger">Stop recording</button>
-            <span role="timer" aria-live="off" className="text-sm tabular-nums text-stone-700">
+            <button type="button" onClick={stopRecording} className="btn btn-sm btn-rec">Stop recording</button>
+            <span role="timer" aria-live="off" className="hint num">
               {state.seconds}s of up to {maxSeconds}s
             </span>
           </>

@@ -48,3 +48,11 @@ export function describeReason(code: string | null | undefined): string {
   const shown = SAFE_CODE.test(code) ? ` (code ${code})` : '';
   return `This zone could not be processed${shown}. ${NOT_ASSESSED}`;
 }
+
+/**
+ * True when the reason code says the footage itself was too blurry, dark or shaky to assess.
+ * The backend has no dedicated quality code yet, so this matches on the code text; unknown codes never match.
+ */
+export function isQualityReason(code: string | null | undefined): boolean {
+  return !!code && /BLUR|QUALITY|TOO_DARK|SHAKY/.test(code);
+}

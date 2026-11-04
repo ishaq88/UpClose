@@ -5,11 +5,20 @@ import { defineConfig, loadEnv } from "vite";
 
 const webRoot = fileURLToPath(new URL(".", import.meta.url));
 
+const DEFAULT_REPO_URL = "https://github.com/ishaq88/UpClose";
+
+/** The public source link shown while the app is not live: HTTPS GitHub only. */
+function repoUrl(raw: string | undefined): string {
+  const value = raw || DEFAULT_REPO_URL;
+  const parsed = new URL(value);
+  if (parsed.protocol !== "https:" || parsed.hostname !== "github.com" || parsed.username || parsed.password || parsed.search || parsed.hash)
+    throw new Error("VITE_REPO_URL must be an https://github.com/... repository URL.");
+  return parsed.href.replace(/\/$/, "");
+}
+
+/** Empty origin = coming-soon mode: product actions point to the sample report and the code instead. */
 function appOrigin(raw: string | undefined, allowLocal: boolean): string {
-  if (!raw)
-    throw new Error(
-      "Landing build requires explicit VITE_APP_ORIGIN (the HTTPS product origin).",
-    );
+  if (!raw) return "";
   let parsed: URL;
   try {
     parsed = new URL(raw);
@@ -40,13 +49,11 @@ function appOrigin(raw: string | undefined, allowLocal: boolean): string {
 export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, webRoot, [
     "VITE_APP_ORIGIN",
+    "VITE_REPO_URL",
     "LANDING_ALLOW_LOCAL_APP",
   ]);
   const development = command === "serve";
-  const raw =
-    process.env.VITE_APP_ORIGIN ??
-    env.VITE_APP_ORIGIN ??
-    (development ? "http://localhost:5173" : undefined);
+  const raw = process.env.VITE_APP_ORIGIN ?? env.VITE_APP_ORIGIN;
   const allowLocal =
     development ||
     (process.env.LANDING_ALLOW_LOCAL_APP ?? env.LANDING_ALLOW_LOCAL_APP) ===
@@ -56,9 +63,21 @@ export default defineConfig(({ command, mode }) => {
     root: fileURLToPath(new URL("./marketing", import.meta.url)),
     envDir: webRoot,
     plugins: [react(), tailwindcss()],
-    define: { "import.meta.env.VITE_APP_ORIGIN": JSON.stringify(origin) },
+    define: {
+      "import.meta.env.VITE_APP_ORIGIN": JSON.stringify(origin),
+      "import.meta.env.VITE_REPO_URL": JSON.stringify(repoUrl(process.env.VITE_REPO_URL ?? env.VITE_REPO_URL)),
+    },
     server: { host: "127.0.0.1", port: 5180, strictPort: true },
     preview: { host: "127.0.0.1", port: 5180, strictPort: true },
-    build: { outDir: "../dist-landing", emptyOutDir: true },
+    build: {
+      outDir: "../dist-landing",
+      emptyOutDir: true,
+      rollupOptions: {
+        input: {
+          main: fileURLToPath(new URL("./marketing/index.html", import.meta.url)),
+          sample: fileURLToPath(new URL("./marketing/sample/index.html", import.meta.url)),
+        },
+      },
+    },
   };
 });

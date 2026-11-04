@@ -1,352 +1,158 @@
-import { useState } from "react";
+import type { ReactElement } from 'react';
+import { findingTitle, formatIndex, formatTime, notChecked, OPTIONAL_ZONES, orderFindings, scoredZones, verdict, ZONE_LABEL } from '../report/model';
+import { HERO_PHOTO, HERO_POINTS, SAMPLE_REPORT, sampleFrameUrl } from '../sample/sample';
+import { Wordmark } from '../ui/Wordmark';
+import { HeroLoupe, type LoupePoint } from './HeroLoupe';
 
-interface LandingPageProps {
-  appOrigin: string;
+export interface LandingPageProps {
+  /** The live app's origin. Null while the app is not public yet: product actions then point to the sample and the code. */
+  appOrigin: string | null;
+  repoUrl: string;
 }
-type SampleZone = "body" | "tires" | "underbody";
-const samples: Record<
-  SampleZone,
-  {
-    label: string;
-    status: string;
-    title: string;
-    detail: string;
-    question: string;
-  }
-> = {
-  body: {
-    label: "Bodywork",
-    status: "Example finding",
-    title: "A scuff worth a second look.",
-    detail:
-      "This illustrative report calls out a surface scuff on the front bumper. A visible mark alone cannot tell you what caused it.",
-    question: "Has this bumper been repaired or repainted?",
-  },
-  tires: {
-    label: "Tires",
-    status: "Partial coverage",
-    title: "The angle matters.",
-    detail:
-      "In this example, the sidewall is visible but the tread is not clear enough to assess. That gap stays in the report.",
-    question: "Can I get a clear view of the tread on each tire?",
-  },
-  underbody: {
-    label: "Underbody",
-    status: "Not assessed",
-    title: "Not seen does not mean clean.",
-    detail:
-      "No underbody clip was supplied in this example. There is no condition finding or score for this area.",
-    question: "Can a qualified mechanic inspect the underside?",
-  },
-};
 
-function LensMark() {
+const SAMPLE_HREF = '/sample/';
+
+function Check(): ReactElement {
   return (
-    <svg aria-hidden="true" viewBox="0 0 32 32" fill="none">
-      <path
-        d="M12 5H5v7M20 5h7v7M27 20v7h-7M12 27H5v-7"
-        stroke="currentColor"
-        strokeWidth="2.4"
-      />
-      <circle cx="16" cy="16" r="4" stroke="currentColor" strokeWidth="2.4" />
+    <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
+      <circle cx="11" cy="11" r="10" fill="#ff5a1f" /><path d="M6.5 11.5l3 3 6-6.5" fill="none" stroke="#111315" strokeWidth="2.2" />
     </svg>
   );
 }
 
-function ReportSample() {
-  const [zone, setZone] = useState<SampleZone>("body");
-  const sample = samples[zone];
+function GitHubMark(): ReactElement {
   return (
-    <div className="report-sheet">
-      <div className="report-topline">
-        <span className="report-wordmark">UpClose</span>
-        <span className="sample-label">Synthetic sample</span>
-      </div>
-      <h3>A little more to go on.</h3>
-      <p className="report-intro">
-        Explore how a finding and a missing view tell different stories.
-      </p>
-      <div
-        className="sample-options"
-        role="group"
-        aria-label="Explore sample areas"
-      >
-        {(Object.keys(samples) as SampleZone[]).map((key) => (
-          <button
-            key={key}
-            type="button"
-            aria-pressed={zone === key}
-            onClick={() => setZone(key)}
-          >
-            {samples[key].label}
-          </button>
-        ))}
-      </div>
-      <div className="sample-detail" aria-live="polite" aria-atomic="true">
-        <div className="sample-status">
-          <span className={`status-mark ${zone}`} aria-hidden="true" />
-          {sample.status}
-        </div>
-        <h4>{sample.title}</h4>
-        <p>{sample.detail}</p>
-        <div className="next-question">
-          <span>A question to take with you</span>
-          <p>“{sample.question}”</p>
-        </div>
-      </div>
-      <p className="sample-note">
-        Illustrative content, not an assessment of the pictured car.
-      </p>
-    </div>
+    <svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+      <path d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38v-1.33c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.06-.49.06-.49.8.06 1.23.83 1.23.83.71 1.22 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.65-.89-3.65-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.66 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 8 0Z" />
+    </svg>
   );
 }
 
-export function LandingPage({ appOrigin }: LandingPageProps) {
+export function LandingPage({ appOrigin, repoUrl }: LandingPageProps): ReactElement {
+  const live = appOrigin !== null;
+  const findings = orderFindings(SAMPLE_REPORT.findings);
+  const v = verdict(findings);
+  const zones = SAMPLE_REPORT.scores.zones;
+  const scorable = zones.filter((z) => !OPTIONAL_ZONES.has(z.zone)).length;
+  const missing = notChecked(zones).filter((z) => !OPTIONAL_ZONES.has(z.zone));
+  const top = findings[0];
+  const driver = zones.find((z) => z.zone === 'driver_side');
+  const points: LoupePoint[] = findings.flatMap((f) => {
+    const at = HERO_POINTS[f.id];
+    const [what, ...where] = findingTitle(f).split(', ');
+    return at ? [{ ...at, title: what ?? '', detail: where.join(', ').replace(/^./, (c) => c.toUpperCase()), time: formatTime(f.source_timestamp_ms) }] : [];
+  });
+
+  const primary = live
+    ? <a className="btn" href={appOrigin}>Start an inspection</a>
+    : <a className="btn" href={SAMPLE_HREF}>See a sample report</a>;
+  const secondary = live
+    ? <a className="textlink" href={SAMPLE_HREF}>See a sample report</a>
+    : <a className="textlink with-icon" href={repoUrl} target="_blank" rel="noopener noreferrer"><GitHubMark />View the code on GitHub</a>;
+
   return (
     <>
-      <a className="skip-link" href="#main">
-        Skip to content
-      </a>
-      <header className="site-header page-width">
-        <a className="wordmark" href="#" aria-label="UpClose home">
-          upclose
-          <span className="wordmark-dot" />
-        </a>
-        <nav aria-label="Main navigation">
-          <a href="#how-it-works">How it works</a>
-          <a href="#sample">The report</a>
-          <a className="nav-app" href={appOrigin}>
-            Open prototype <span aria-hidden="true">↗</span>
-          </a>
+      <a className="skip-link" href="#main">Skip to content</a>
+      <header className="site-head"><div className="wrap">
+        <Wordmark />
+        <nav className="site-nav" aria-label="Main">
+          <a className="hide-sm" href="#how">How it works</a>
+          <a className="hide-sm" href={SAMPLE_HREF}>Sample report</a>
+          <a className="hide-sm" href="#pricing">Pricing</a>
+          {live
+            ? <a className="btn btn-sm" href={appOrigin}>Start an inspection</a>
+            : <a className="btn btn-sm btn-ghost" href={repoUrl} target="_blank" rel="noopener noreferrer"><GitHubMark /><span className="hide-xs">GitHub</span></a>}
         </nav>
-      </header>
+      </div></header>
+
       <main id="main">
-        <section className="hero page-width" aria-labelledby="hero-title">
-          <div className="hero-copy">
-            <p className="intro-line">
-              <span />
-              For your next used car.
-            </p>
-            <h1 id="hero-title">
-              Good find.
-              <br />
-              Look closer.
-            </h1>
-            <p className="hero-description">
-              The listing tells one story. Get a closer look at the car itself,
-              with a guided walkaround and a place for every question.
-            </p>
-            <div className="hero-actions">
-              <a className="button" href={appOrigin}>
-                Try the prototype <LensMark />
-              </a>
-              <a className="text-link" href="#sample">
-                Explore a sample report
-              </a>
+        <section className="wrap hero" aria-labelledby="hero-h">
+          <div className="hero-top">
+            <h1 id="hero-h">Good find.<br />Look closer.</h1>
+            <div className="hero-copy">
+              <p className="lede">Film a used car on your phone before you buy it. UpClose checks the footage for rust, dents, scratches, cracked glass, worn tires and leaks, and shows you the exact frame where it found each one.</p>
+              <div className="hero-cta">{primary}{secondary}</div>
+              <p className="price-note">{live ? 'Driver side free. Full report $19.' : 'The app opens to the public soon. Driver side will be free; the full report $19.'}</p>
             </div>
-            <p className="prototype-note">
-              Early prototype. Assessments are currently synthetic.
-            </p>
           </div>
-          <figure className="hero-figure">
-            <div className="hero-photo">
-              <img
-                src="/assets/used-car-editorial.png"
-                alt="Close view of an older silver station wagon outside a garage"
-                width="1536"
-                height="1024"
-                fetchPriority="high"
-              />
-              <div className="photo-frame" aria-hidden="true">
-                <i />
-                <i />
-                <i />
-                <i />
-              </div>
-              <span className="photo-message">
-                Every car has a story.
-                <br />
-                Start with what you can see.
-              </span>
+          <HeroLoupe src={HERO_PHOTO.src} width={HERO_PHOTO.width} height={HERO_PHOTO.height} points={points}
+            alt={`A white panel van with ${points.length} findings marked: ${points.map((p) => `${p.title.toLowerCase()} on the ${p.detail.toLowerCase()}`).join(', ')}.`} />
+        </section>
+
+        <section id="how" className="wrap section" aria-labelledby="how-h">
+          <h2 id="how-h" className="h-xl">About three minutes<br />at the car.</h2>
+          <ol className="steps">
+            <li className="step"><span className="step-k">Step 1</span><h3>Film the car</h3>
+              <p>Walk around it once, or follow eight short guided clips. Skip anything you can't reach.</p>
+              <div className="step-vis chips" aria-hidden="true"><span className="chip chip-on">Driver side</span><span className="chip">Passenger side</span><span className="chip">Front &amp; rear</span><span className="chip">Tires</span><span className="chip chip-hatch">Underbody</span></div></li>
+            <li className="step"><span className="step-k">Step 2</span><h3>We check every frame</h3>
+              <p>UpClose finds the vehicle in each frame, ignores everything around it, and looks for damage on the vehicle itself.</p>
+              {top && <div className="step-vis step-frame" aria-hidden="true"><img src={sampleFrameUrl(top.id)} alt="" loading="lazy" /><span className="ev-stamp">{formatTime(top.source_timestamp_ms)}</span></div>}</li>
+            <li className="step"><span className="step-k">Step 3</span><h3>Know what to ask</h3>
+              <p>Every finding comes with its frame and timestamp, plus what couldn't be checked and questions for the seller.</p>
+              <div className="step-vis step-pills" aria-hidden="true">
+                {driver?.score != null && <span className="pill pill-ok">Driver side · {formatIndex(driver.score)}</span>}
+                {missing[0] && <span className="pill pill-not">{ZONE_LABEL[missing[missing.length - 1]!.zone]} · not checked</span>}
+              </div></li>
+          </ol>
+        </section>
+
+        <section id="inside" className="dark" aria-labelledby="inside-h">
+          <div className="wrap dark-grid">
+            <div className="dark-copy">
+              <h2 id="inside-h" className="h-xl">A report you can take to the seller.</h2>
+              <ul>
+                <li><Check /><span>Each finding with the frame and second it was found</span></li>
+                <li><Check /><span>Zones that couldn't be checked, listed plainly</span></li>
+                <li><Check /><span>The seller's listing checked against your footage</span></li>
+                <li><Check /><span>Repair cost ranges and a checklist for your mechanic</span></li>
+              </ul>
+              <a className="btn" href={SAMPLE_HREF}>Open the sample report</a>
             </div>
-            <figcaption>
-              <span>A closer look changes the conversation.</span>
-              <span>AI-generated illustration</span>
-            </figcaption>
-          </figure>
-        </section>
-        <div className="principles page-width">
-          <p>
-            Made for the walkaround.
-            <br />
-            <strong>And the questions after it.</strong>
-          </p>
-          <ul>
-            <li>Guided, part by part</li>
-            <li>Visible condition in context</li>
-            <li>Missing views made clear</li>
-          </ul>
-        </div>
-        <section
-          id="how-it-works"
-          className="walkaround page-width"
-          aria-labelledby="walkaround-title"
-        >
-          <div className="section-heading">
-            <span className="section-kicker">The walkaround</span>
-            <h2 id="walkaround-title">
-              Less guesswork.
-              <br />A better place to start.
-            </h2>
-          </div>
-          <div className="steps">
-            <article>
-              <span className="step-number">01</span>
-              <div>
-                <h3>Bring your phone. Take your time.</h3>
-                <p>
-                  Choose guided clips or record or upload one video, up to three
-                  minutes. Follow the optional guide and skip anything you cannot
-                  safely reach. Unmapped areas remain unassessed.
-                </p>
+            <a className="phone" href={SAMPLE_HREF} aria-label="Open the sample report">
+              <div className="phone-in">
+                <div className="phone-top"><span className="wordmark wordmark-xs">upclose<i /></span><span>{SAMPLE_REPORT.vehicle_label}</span></div>
+                <div><b className="phone-verdict">{v.headline}</b><span className="phone-sub">{SAMPLE_REPORT.scores.headline !== null ? `Index ${formatIndex(SAMPLE_REPORT.scores.headline)} · ` : ''}based on {scoredZones(zones).length} of {scorable} zones</span></div>
+                {top && <div className="phone-print"><div className="ev-frame"><img src={sampleFrameUrl(top.id)} alt="" loading="lazy" /><span className="ev-stamp">{formatTime(top.source_timestamp_ms)}</span></div><b>1 · {findingTitle(top)}</b></div>}
+                <div className="phone-pills">{missing.map((z) => <span key={z.zone} className="pill pill-not">{ZONE_LABEL[z.zone]} · {z.state === 'partial' ? 'partly checked' : 'not checked'}</span>)}</div>
               </div>
-            </article>
-            <article>
-              <span className="step-number">02</span>
-              <div>
-                <h3>Put the visible details in context.</h3>
-                <p>
-                  The report format brings findings and coverage together. A
-                  blurry clip or a skipped area should leave a question, never a
-                  clean bill of health.
-                </p>
-              </div>
-            </article>
-            <article>
-              <span className="step-number">03</span>
-              <div>
-                <h3>Have a more useful conversation.</h3>
-                <p>
-                  Bring specific questions to the seller and a qualified
-                  mechanic. Visible condition is a starting point, not the whole
-                  story.
-                </p>
-              </div>
-            </article>
-          </div>
-        </section>
-        <section
-          id="sample"
-          className="sample-section"
-          aria-labelledby="sample-title"
-        >
-          <div className="sample-layout page-width">
-            <div className="sample-copy">
-              <span className="section-kicker">Inside the report</span>
-              <h2 id="sample-title">
-                The detail.
-                <br />
-                The context.
-                <br />
-                The unknowns.
-              </h2>
-              <p>
-                A useful report should show you what it can say—and be just as
-                clear about what it cannot.
-              </p>
-              <p className="sample-explanation">
-                This interactive sample illustrates the report structure. Real
-                AI assessment is still being validated.
-              </p>
-              <a className="light-link" href={appOrigin}>
-                Explore the capture prototype <span aria-hidden="true">↗</span>
-              </a>
-            </div>
-            <ReportSample />
-          </div>
-        </section>
-        <section
-          className="questions page-width"
-          aria-labelledby="questions-title"
-        >
-          <div className="section-heading">
-            <span className="section-kicker">Before you start</span>
-            <h2 id="questions-title">
-              A few good
-              <br />
-              questions.
-            </h2>
-          </div>
-          <div className="faq-list">
-            <details>
-              <summary>Is this a mechanical inspection?</summary>
-              <p>
-                No. UpClose is a condition-screening prototype focused on
-                visible details. It cannot establish mechanical health, accident
-                history, or whether a car is safe to drive. Arrange an in-person
-                inspection with a qualified mechanic.
-              </p>
-            </details>
-            <details>
-              <summary>Does the AI work on real cars yet?</summary>
-              <p>
-                The capture and report flow is available to try, but current
-                assessments use synthetic fixtures. Live model access and
-                evaluation on permission-cleared vehicle footage are still
-                pending. We do not claim measured detection accuracy.
-              </p>
-            </details>
-            <details>
-              <summary>What do I need for a walkaround?</summary>
-              <p>
-                A phone, permission to record the car, and enough light to see
-                the surfaces. The prototype accepts guided clips or one
-                continuous video. Automatic area recognition is not connected. Real-device browser validation is still in progress. Do
-                not crawl under an unsupported vehicle or record while driving.
-              </p>
-            </details>
-            <details>
-              <summary>What happens to my footage?</summary>
-              <p>
-                The capture app asks for consent before you begin. General
-                public sharing is disabled in this prototype. You can request
-                deletion from the app; access is revoked first, then stored
-                media is queued for removal. Only upload footage you have
-                permission to use.
-              </p>
-            </details>
-            <details>
-              <summary>Do I need to pay to try it?</summary>
-              <p>
-                The prototype uses test payments only. Do not enter real payment
-                details. Production checkout is not available yet.
-              </p>
-            </details>
-          </div>
-        </section>
-        <section className="closing page-width">
-          <LensMark />
-          <h2>
-            Your next car
-            <br />
-            deserves a closer look.
-          </h2>
-          <div>
-            <a className="button" href={appOrigin}>
-              Try the prototype <span aria-hidden="true">↗</span>
             </a>
-            <p>Choose guided clips or one video.</p>
+          </div>
+        </section>
+
+        <section id="pricing" className="wrap section" aria-labelledby="price-h">
+          <h2 id="price-h" className="h-xl">Start free.<br />Pay if it's worth it.</h2>
+          <div className="plans">
+            <div className="plan"><h3>Driver side</h3><div className="price">Free</div>
+              <ul><li>Condition index for the driver side</li><li>Driver-side findings with frames</li><li>See which zones you've covered</li></ul>
+              {live && <a className="btn btn-ghost" href={appOrigin}>Start free</a>}</div>
+            <div className="plan plan-hot"><h3>Full report</h3><div className="price">$19 <span>per vehicle</span></div>
+              <ul><li>All eight zones</li><li>Every finding with its frame</li><li>Listing claims checked</li><li>Repair cost ranges</li><li>A checklist for the seller and your mechanic</li></ul>
+              <a className="btn" href={live ? appOrigin : SAMPLE_HREF}>{live ? 'Start an inspection' : 'See a full report'}</a></div>
+          </div>
+        </section>
+
+        <section className="wrap section" aria-labelledby="faq-h">
+          <h2 id="faq-h" className="h-xl">Questions</h2>
+          <div className="faq">
+            <details open><summary>Is this a mechanical inspection?</summary><p>No. UpClose looks at what your camera can see. It can't hear the engine or lift the vehicle. Use it to decide which car is worth a mechanic's time, and what to ask about.</p></details>
+            <details><summary>What do I need?</summary><p>A phone with a camera and about three minutes at the car in daylight. No app to install.</p></details>
+            <details><summary>What if I can't film everything?</summary><p>Skip it. Anything you don't film is marked as not checked in your report. It never counts as clean.</p></details>
+            <details><summary>What happens to my footage?</summary><p>It's stored privately and only you can see it. You can delete it at any time.</p></details>
+            {!live && <details><summary>When can I use it?</summary><p>The app opens to the public soon. Until then you can read the sample report or run UpClose yourself from the code on GitHub.</p></details>}
+          </div>
+          <div className="closer">
+            <h2 className="h-lg">{live ? 'Standing next to it right now?' : 'See what a report looks like.'}</h2>
+            {live ? <a className="btn" href={appOrigin}>Start with the driver side</a> : <a className="btn" href={SAMPLE_HREF}>Open the sample report</a>}
           </div>
         </section>
       </main>
-      <footer className="site-footer page-width">
-        <a className="wordmark" href="#" aria-label="Back to top">
-          upclose
-          <span className="wordmark-dot" />
-        </a>
-        <p>A closer look before your next car.</p>
-        <span>Built with questions in mind.</span>
-      </footer>
+
+      <footer className="site-foot"><div className="wrap">
+        <Wordmark small />
+        <span>A visual screening of your footage, not a mechanical inspection.</span>
+        <nav aria-label="Footer"><a href={repoUrl} target="_blank" rel="noopener noreferrer">GitHub</a><a href={SAMPLE_HREF}>Sample report</a></nav>
+      </div></footer>
     </>
   );
 }

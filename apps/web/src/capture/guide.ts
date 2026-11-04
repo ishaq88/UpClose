@@ -42,9 +42,9 @@ export const GUIDE_STEPS: readonly GuideStep[] = [
   },
   {
     partNo: 3, zone: 'front_rear_body', title: 'Front and rear, with glass', targetSeconds: 30,
-    goal: 'Show both ends of the car, including the windscreen and rear window.',
+    goal: 'Show both ends of the car, including the windshield and rear window.',
     steps: [
-      'Film the front bumper, hood and windscreen from a little way back.',
+      'Film the front bumper, hood and windshield from a little way back.',
       'Walk around to the rear and film the trunk, bumper and rear window.',
       'Move slowly so glass reflections do not hide cracks. Aim for about 30 seconds.',
     ],

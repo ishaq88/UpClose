@@ -1,24 +1,29 @@
 import { useCallback, useMemo, useState, type ReactElement } from 'react';
 import type { Api, PartSummary } from '../api/client';
+import { SaveInspection } from '../accounts/SaveInspection';
 import { GUIDE_STEPS, guideFor } from '../capture/guide';
+import { OPTIONAL_PARTS, sortForDisplay } from '../capture/zones';
 import { normalizeVideoType } from '../capture/media';
 import { describeError, type UiError } from '../errors';
 import { useSession } from '../session/useSession';
 import { useSourceUpload } from '../upload/useSourceUpload';
 import { SingleVideoCapture } from './SingleVideoCapture';
 import { useUploads } from '../upload/useUploads';
-import { ErrorNotice, PartCard, STATE_LABEL } from './PartCard';
+import { ErrorNotice, PartCard, STATE_LABEL, zoneStateLabel } from './PartCard';
 import { Part1Slot } from './FreeVerdictCard';
 import { ProgressPanel } from './ProgressPanel';
+import '../capture/capture.css';
 
 interface Props {
   api: Api;
   sessionId: string;
+  /** The inspection's owner token, passed only to SaveInspection so it can link the inspection to an account. */
+  ownerToken: string;
   /** Forget the stored session so the consent screen shows again. */
   onNewSession: () => void;
 }
 
-export function CaptureFlow({ api, sessionId, onNewSession }: Props): ReactElement {
+export function CaptureFlow({ api, sessionId, ownerToken, onNewSession }: Props): ReactElement {
   const { session, progress, error, unauthorized, refresh, markUnauthorized } = useSession(api, sessionId);
   const singleVideo = session?.capture_mode === 'single_video';
   const sourceUpload = useSourceUpload({ api, sessionId, enabled: singleVideo && session?.state !== 'deleting' && session?.state !== 'deleted' && !unauthorized, onChanged: refresh, onUnauthorized: markUnauthorized });
@@ -34,11 +39,14 @@ export function CaptureFlow({ api, sessionId, onNewSession }: Props): ReactEleme
   const [finishing, setFinishing] = useState(false);
 
   const parts = useMemo(() => [...(session?.parts ?? [])].sort((a, b) => a.part_no - b.part_no), [session]);
+  const display = useMemo(() => sortForDisplay(parts), [parts]);
 
-  // Open the first pending step once, as soon as the server has told us which it is.
-  if (!opened && parts.length > 0) {
+  // Open the zone that needs attention once, as soon as the server has told us which it is: an interrupted
+  // or failed upload first (it needs the user), then the first zone not yet filmed.
+  if (!opened && display.length > 0) {
     setOpened(true);
-    setOpen(singleVideo ? null : parts.find((part) => part.state === 'pending')?.part_no ?? null);
+    const attention = display.find((part) => part.state === 'uploading' || part.state === 'failed') ?? display.find((part) => part.state === 'pending');
+    setOpen(attention?.part_no ?? display[0]!.part_no);
   }
 
   const setPartError = useCallback((partNo: number, value: UiError | null) => {
@@ -100,52 +108,72 @@ export function CaptureFlow({ api, sessionId, onNewSession }: Props): ReactEleme
   const notFilmed = parts.filter((part) => part.state === 'pending');
   const skipped = parts.filter((part) => part.state === 'skipped');
 
-  return (
-    <div className="space-y-8">
-      <section aria-labelledby="tab-heading" className="rounded-lg bg-amber-50 p-3 text-sm leading-relaxed text-amber-900">
-        <h2 id="tab-heading" className="font-semibold">Keep this tab open</h2>
-        <p>
-          Your session is tied to this browser tab. Reloading is fine, but closing the tab may lose access to the session and its uploads, and there is no recovery from another device.
-          An interrupted upload can continue only if you select the same video file again. A clip you recorded in the page cannot be recovered after a reload.
-        </p>
-      </section>
+  const current = display.find((part) => part.part_no === open) ?? display[0];
+  const filmed = parts.filter((part) => part.state === 'uploaded' || part.state === 'processing' || part.state === 'processed').length;
+  const currentIndex = current ? display.indexOf(current) : -1;
+  const nextPending = display.find((part) => part.state === 'pending' && part.part_no !== current?.part_no);
+  const nextGuide = nextPending ? (guideFor(nextPending.part_no) ?? GUIDE_STEPS[0]!) : null;
 
+  return (
+    <div className="capture">
       {unauthorized && (
-        <div role="alert" className="space-y-3 rounded-lg border border-red-300 bg-red-50 p-4 text-red-900">
-          <p className="font-semibold">Your session has expired or was lost</p>
-          <p className="text-sm">
+        <div role="alert" className="notice notice-error stack">
+          <p className="notice-title">Your session has expired or was lost</p>
+          <p>
             This browser tab no longer has valid access to its session. Sessions cannot be recovered from another tab or device, and closing the tab can lose them.
             Start a new session to continue; videos from the old session cannot be reattached.
           </p>
-          <button type="button" onClick={onNewSession} className="btn-primary">Start a new session</button>
+          <button type="button" onClick={onNewSession} className="btn btn-sm">Start a new session</button>
         </div>
       )}
       {!unauthorized && error && !session && <ErrorNotice error={error} />}
       {!unauthorized && error && session && (
-        <p role="status" className="text-sm text-amber-800">Could not refresh status just now: {error.title}. Showing the last known state.</p>
+        <p role="status" className="notice notice-warn">Could not refresh status just now: {error.title}. Showing the last known state.</p>
       )}
 
-      {(session?.state === 'deleting' || session?.state === 'deleted') && <p role="status">This session has been deleted or is being deleted. <button type="button" className="btn-secondary" onClick={onNewSession}>Start a new session</button></p>}
-      {deleting && <p role="status">Deleting session media...</p>}
-      {!session && !error && <p role="status" className="text-stone-600">Loading your session...</p>}
+      {(session?.state === 'deleting' || session?.state === 'deleted') && <p role="status" className="notice stack">This session has been deleted or is being deleted. <button type="button" className="btn btn-sm" onClick={onNewSession}>Start a new session</button></p>}
+      {deleting && <p role="status" className="notice">Deleting session media...</p>}
+      {!session && !error && <p role="status" className="muted">Loading your session...</p>}
 
       {session && !unauthorized && !deleting && session.state !== 'deleting' && session.state !== 'deleted' && (
         <>
           {singleVideo && <SingleVideoCapture upload={sourceUpload} capturing={capturing && !confirmDelete} />}
-          <Part1Slot part1={parts.find((part) => part.part_no === 1)} verdict={progress?.free_verdict} />
 
-          <section aria-labelledby="steps-heading">
-            <h2 id="steps-heading" className="text-xl font-semibold">{singleVideo ? 'Guided follow-up clips' : 'Capture steps'}</h2>
-            {singleVideo && <p className="mt-2 text-sm text-stone-600">After source preparation, add short clips for available missing areas. You can finish without filming every area; missing and unverified areas remain unassessed.</p>}
-            <ol className="mt-4 space-y-4">
-              {parts.map((part) => {
+          <section aria-labelledby="steps-heading" className="cap">
+            <h2 id="steps-heading" className={singleVideo ? 'cap-heading' : 'sr-only'}>{singleVideo ? 'Guided follow-up clips' : 'Capture steps'}</h2>
+            <div className="cap-top hide-lg">
+              <span>{current ? `Zone ${currentIndex + 1} of ${display.length} · ${(guideFor(current.part_no) ?? GUIDE_STEPS[0]!).title}` : 'Zones'}</span>
+              <span className="muted">{filmed} filmed</span>
+            </div>
+            <nav aria-label="Zones" className="zones">
+              <p className="zones-count hide-sm">{filmed} of {display.length} filmed</p>
+              <ol className="zones-list">
+                {display.map((part, index) => {
+                  const guide = guideFor(part.part_no) ?? GUIDE_STEPS[0]!;
+                  return (
+                    <li key={part.id}>
+                      <button type="button" className={`zone zone-${part.state}`} aria-current={part.part_no === current?.part_no ? 'step' : undefined}
+                        onClick={() => setOpen(part.part_no)}>
+                        <span className="zn" aria-hidden="true">{index + 1}</span>
+                        <span className="zt">{guide.title}{OPTIONAL_PARTS.has(part.part_no) && <span className="opt-tag">Optional</span>}</span>
+                        <span className="st" data-testid={`state-${part.part_no}`}>{zoneStateLabel(part.state, uploads.local[part.part_no])}</span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ol>
+            </nav>
+            <div className="cap-main">
+              {singleVideo && <p className="hint">After source preparation, add short clips for available missing areas. You can finish without filming every area; missing and unverified areas remain unassessed.</p>}
+              {current && (() => {
+                const part = current;
                 const guide = guideFor(part.part_no) ?? GUIDE_STEPS[0]!;
                 return (
-                  <PartCard key={part.id} guide={guide} part={part} expanded={open === part.part_no}
-                    onToggle={() => setOpen(open === part.part_no ? null : part.part_no)}
+                  <PartCard key={part.id} guide={guide} part={part} optional={OPTIONAL_PARTS.has(part.part_no)}
                     local={uploads.local[part.part_no]} record={uploads.records[part.part_no]}
                     hasFile={uploads.getFile(part.part_no) !== undefined} sessionCapturing={capturing && !confirmDelete && (!singleVideo || sourceUpload.followupsAllowed)}
                     actionError={actionErrors[part.part_no]}
+                    next={nextPending && nextGuide ? { title: nextGuide.title, go: () => setOpen(nextPending.part_no) } : null}
                     onStart={(file, contentType) => { setPartError(part.part_no, null); void uploads.start(part.part_no, file, contentType); }}
                     onRetry={() => {
                       const file = uploads.getFile(part.part_no);
@@ -160,54 +188,67 @@ export function CaptureFlow({ api, sessionId, onNewSession }: Props): ReactEleme
                     onSkip={() => { void skip(part); }}
                     onDismissError={() => { setPartError(part.part_no, null); uploads.dismissError(part.part_no); }} />
                 );
-              })}
-            </ol>
-          </section>
+              })()}
 
-          <section aria-labelledby="finish-heading" className="space-y-3 rounded-2xl border border-stone-200 bg-white p-4 sm:p-5">
-            <h2 id="finish-heading" className="text-xl font-semibold">Finish</h2>
-            <ZoneSummary notFilmed={notFilmed} skipped={skipped} />
-            {capturing ? (
-              <>
-                {uploadActive && <p className="text-sm text-amber-900" role="status">{singleVideo && sourceUpload.blocksFinish ? 'Source status is loading, an upload is unfinished, or source preparation is pending. Finish becomes available after the source settles; you can discard an unfinished upload.' : 'An upload is still in progress. Finish is available once it completes or you cancel it.'}</p>}
-                {finishError && <ErrorNotice error={finishError} onDismiss={() => setFinishError(null)} />}
-                {confirmFinish ? (
-                  <div className="rounded-lg border border-stone-300 bg-stone-50 p-3 text-sm">
-                    <p>Finish capture? This freezes your selection.{notFilmed.length > 0 ? ` ${notFilmed.length} zone${notFilmed.length === 1 ? '' : 's'} not yet filmed will be marked skipped.` : ''}</p>
-                    <div className="mt-2 flex gap-3">
-                      <button type="button" className="btn-primary" disabled={!canFinish} onClick={() => { void finalize(); }}>Yes, finish</button>
-                      <button type="button" className="btn-secondary" onClick={() => setConfirmFinish(false)}>Keep filming</button>
-                    </div>
-                  </div>
+              <div className="note-row">
+                <ClockIcon />
+                <span><b>Keep this tab open.</b> <span className="muted">Reloading is fine, but closing the tab may lose access to this session and its uploads, with no recovery from another device. An interrupted upload continues only if you select the same video file again; a clip recorded in the page cannot be recovered after a reload.</span></span>
+              </div>
+              <SaveInspection sessionId={sessionId} ownerToken={ownerToken} />
+
+              <Part1Slot part1={parts.find((part) => part.part_no === 1)} verdict={progress?.free_verdict} />
+
+              <section aria-labelledby="finish-heading" className="card finish">
+                <h2 id="finish-heading">Finish</h2>
+                <ZoneSummary notFilmed={notFilmed} skipped={skipped} />
+                {capturing ? (
+                  <>
+                    {uploadActive && <p className="notice notice-warn" role="status">{singleVideo && sourceUpload.blocksFinish ? 'Source status is loading, an upload is unfinished, or source preparation is pending. Finish becomes available after the source settles; you can discard an unfinished upload.' : 'An upload is still in progress. Finish is available once it completes or you cancel it.'}</p>}
+                    {finishError && <ErrorNotice error={finishError} onDismiss={() => setFinishError(null)} />}
+                    {confirmFinish ? (
+                      <div className="notice stack">
+                        <p>Finish capture? This freezes your selection.{notFilmed.length > 0 ? ` ${notFilmed.length} zone${notFilmed.length === 1 ? '' : 's'} not yet filmed will be marked skipped.` : ''}</p>
+                        <div className="cap-actions">
+                          <button type="button" className="btn btn-dark" disabled={!canFinish} onClick={() => { void finalize(); }}>Yes, finish</button>
+                          <button type="button" className="btn btn-ghost" onClick={() => setConfirmFinish(false)}>Keep filming</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <button type="button" className="btn btn-dark" disabled={!canFinish} aria-describedby="finish-help" onClick={() => setConfirmFinish(true)}>
+                          Finish capture
+                        </button>
+                      </div>
+                    )}
+                    <p id="finish-help" className="hint">Capture never finishes on its own. You choose when to finish.</p>
+                  </>
                 ) : (
-                  <button type="button" className="btn-primary" disabled={!canFinish} aria-describedby="finish-help" onClick={() => setConfirmFinish(true)}>
-                    Finish capture
-                  </button>
+                  <p role="status">Capture is finished. The selection is frozen.</p>
                 )}
-                <p id="finish-help" className="text-xs text-stone-600">Capture never finishes on its own. You choose when to finish.</p>
-              </>
-            ) : (
-              <p className="text-sm text-stone-700" role="status">Capture is finished. The selection is frozen.</p>
-            )}
-          </section>
+              </section>
 
-          <ProgressPanel api={api} progress={progress} onRefresh={refresh} onUnauthorized={markUnauthorized} />
-          <section className="space-y-3 rounded-lg border border-red-300 p-4">
-            <h2 className="font-semibold">Delete session media</h2>
-            <p className="text-sm">This removes access immediately and queues deletion of videos and report evidence. Previously downloaded copies cannot be recalled; issued image links can remain valid for up to 60 seconds.</p>
-            {deleteError && <ErrorNotice error={deleteError} />}
-            {confirmDelete ? <>
-              <p>Delete this session and its media? You cannot undo this.</p>
-              <button type="button" className="btn-primary" onClick={() => {
-                setDeleting(true); setDeleteError(null);
-                void Promise.all([uploads.stopTransfers(), sourceUpload.stopTransfers()]).then(() => api.deleteMedia(sessionId)).then(onNewSession).catch((caught: unknown) => {
-                  setDeleteError(describeError(caught)); setDeleting(false); setConfirmDelete(false);
-                  if (describeError(caught).action === 'new_session') markUnauthorized();
-                  refresh();
-                });
-              }}>Yes, delete session media</button>
-              <button type="button" className="btn-secondary" onClick={() => setConfirmDelete(false)}>Keep session</button>
-            </> : <button type="button" className="btn-secondary" onClick={() => setConfirmDelete(true)}>Delete session media</button>}
+              <ProgressPanel api={api} progress={progress} onRefresh={refresh} onUnauthorized={markUnauthorized} />
+
+              <section className="card danger-zone">
+                <h2>Delete session media</h2>
+                <p className="hint">This removes access immediately and queues deletion of videos and report evidence. Previously downloaded copies cannot be recalled; issued image links can remain valid for up to 60 seconds.</p>
+                {deleteError && <ErrorNotice error={deleteError} />}
+                {confirmDelete ? <>
+                  <p>Delete this session and its media? You cannot undo this.</p>
+                  <div className="cap-actions">
+                    <button type="button" className="btn btn-rec" onClick={() => {
+                      setDeleting(true); setDeleteError(null);
+                      void Promise.all([uploads.stopTransfers(), sourceUpload.stopTransfers()]).then(() => api.deleteMedia(sessionId)).then(onNewSession).catch((caught: unknown) => {
+                        setDeleteError(describeError(caught)); setDeleting(false); setConfirmDelete(false);
+                        if (describeError(caught).action === 'new_session') markUnauthorized();
+                        refresh();
+                      });
+                    }}>Yes, delete session media</button>
+                    <button type="button" className="btn btn-ghost" onClick={() => setConfirmDelete(false)}>Keep session</button>
+                  </div>
+                </> : <div><button type="button" className="btn btn-ghost btn-sm" onClick={() => setConfirmDelete(true)}>Delete session media</button></div>}
+              </section>
+            </div>
           </section>
         </>
       )}
@@ -215,17 +256,21 @@ export function CaptureFlow({ api, sessionId, onNewSession }: Props): ReactEleme
   );
 }
 
+function ClockIcon(): ReactElement {
+  return <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="10" cy="10" r="7.5" /><path d="M10 6v4l3 2" /></svg>;
+}
+
 function ZoneSummary({ notFilmed, skipped }: { notFilmed: PartSummary[]; skipped: PartSummary[] }): ReactElement {
   return (
-    <div className="space-y-1 text-sm">
+    <div className="zone-summary">
       <p>
-        <span className="font-semibold">Skipped zones: </span>
+        <span className="lead-in">Skipped zones: </span>
         {skipped.length === 0 ? 'none' : skipped.map((part) => guideFor(part.part_no)?.title ?? `Step ${part.part_no}`).join(', ')}
         {skipped.length > 0 && '. Skipped zones are not assessed and will appear as not assessed in the report.'}
       </p>
       {notFilmed.length > 0 && (
         <p>
-          <span className="font-semibold">Not filmed yet ({STATE_LABEL.pending.toLowerCase()}): </span>
+          <span className="lead-in">Not filmed yet ({STATE_LABEL.pending.toLowerCase()}): </span>
           {notFilmed.map((part) => guideFor(part.part_no)?.title ?? `Step ${part.part_no}`).join(', ')}. These become skipped if you finish now.
         </p>
       )}

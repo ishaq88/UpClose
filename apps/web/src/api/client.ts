@@ -28,6 +28,10 @@ export type LockedZoneSummary = Schemas['LockedZoneSummary'];
 export type ReportProgress = Schemas['ReportProgress'];
 export type ReportState = Schemas['ReportState'];
 export type CheckoutResponse = Schemas['CheckoutResponse'];
+export type PaidReport = Schemas['PaidReport'];
+export type FreeReport = Schemas['FreeReport'];
+export type ReportStatus = Schemas['ReportStatus'];
+export type ShareEnableResponse = Schemas['ShareEnableResponse'];
 export type ProblemCode = Schemas['Problem']['code'];
 
 export type ApiErrorCode = ProblemCode | 'NETWORK' | 'UNKNOWN';
@@ -76,7 +80,15 @@ export interface ApiOptions {
 }
 
 export interface Api {
-  createSession(consentVersion: string, listingText: string | null, captureMode?: CaptureMode): Promise<CreateSessionResponse>;
+  /** `accountToken` links the new inspection to a signed-in account; it is never stored as the owner token. */
+  createSession(consentVersion: string, listingText: string | null, captureMode?: CaptureMode, accountToken?: string | null): Promise<CreateSessionResponse>;
+  /** Owner (or linked account) report JSON: free, paid or still-building status. */
+  getReport(slug: string): Promise<FreeReport | PaidReport | ReportStatus>;
+  /** Owner-only. Sets the vehicle name shown on the report and in My reports. */
+  updateLabel(sessionId: string, label: string): Promise<SessionResponse>;
+  /** Owner-only. Turns on the read-only share link for a paid report. */
+  enableShare(slug: string): Promise<ShareEnableResponse>;
+  disableShare(slug: string): Promise<void>;
   getVideoSource(sessionId: string): Promise<VideoSourceResponse>;
   createVideoUpload(sessionId: string, request: CreateVideoUploadRequest, idempotencyKey: string): Promise<CreateVideoUploadResponse>;
   videoUploadUrls(uploadId: string, partNumbers: readonly number[]): Promise<UploadUrl[]>;
@@ -105,6 +117,8 @@ interface RequestOptions {
   body?: unknown;
   idempotencyKey?: string;
   authenticated?: boolean;
+  /** Overrides the owner token for this call (used only to send an account token). */
+  bearer?: string;
 }
 
 export function createApi(options: ApiOptions): Api {
@@ -118,7 +132,8 @@ export function createApi(options: ApiOptions): Api {
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
     if (opts.idempotencyKey) headers['Idempotency-Key'] = opts.idempotencyKey;
-    if (opts.authenticated !== false) {
+    if (opts.bearer) headers.Authorization = `Bearer ${opts.bearer}`;
+    else if (opts.authenticated !== false) {
       const token = options.getToken();
       if (token) headers.Authorization = `Bearer ${token}`;
     }
@@ -175,8 +190,13 @@ export function createApi(options: ApiOptions): Api {
       });
     },
     deleteMedia: async (id) => { await request('POST', `/sessions/${id}/delete-media`, { body: {} }); },
-    createSession: (consentVersion, listingText, captureMode) => request('POST', '/sessions', {
+    getReport: (slug) => request('GET', `/reports/${encodeURIComponent(slug)}`),
+    updateLabel: (id, label) => request('PUT', `/sessions/${id}/label`, { body: { label } }),
+    enableShare: (slug) => request('POST', `/reports/${encodeURIComponent(slug)}/share`, { body: {} }),
+    disableShare: async (slug) => { await request('DELETE', `/reports/${encodeURIComponent(slug)}/share`); },
+    createSession: (consentVersion, listingText, captureMode, accountToken) => request('POST', '/sessions', {
       authenticated: false,
+      ...(accountToken ? { bearer: accountToken } : {}),
       body: {
         ...(captureMode && captureMode !== 'guided' ? { capture_mode: captureMode } : {}),
         purpose: 'buyer', consent_version: consentVersion, consent: true,

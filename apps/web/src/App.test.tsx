@@ -2,8 +2,12 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
+import { guideFor } from './capture/guide';
 import { CONSENT_VERSION } from './config';
 import { FakeBackend } from './testing/fakeBackend';
+
+// three.js and WebGL do not exist in jsdom; the viewer then keeps its loading state and the text steps stay on screen.
+vi.mock('./capture/Guide3D', () => ({ default: () => null }));
 
 let backend: FakeBackend;
 
@@ -28,9 +32,21 @@ function video(bytes: number, pattern = 1, name = 'clip.mp4'): File {
   return new File([data], name, { type: 'video/mp4' });
 }
 
+const startButton = (): HTMLButtonElement => screen.getByRole('button', { name: /^Continue with/ }) as HTMLButtonElement;
+const agree = (): HTMLElement => screen.getByLabelText(/I understand and agree/);
+
+/** The guide card for a zone, selecting the zone first when another one is open. */
+async function zoneCard(title: string): Promise<HTMLElement> {
+  const nav = await screen.findByRole('navigation', { name: 'Zones' });
+  const zone = within(nav).getByRole('button', { name: new RegExp(`^${title}`) });
+  if (zone.getAttribute('aria-current') !== 'step') fireEvent.click(zone);
+  const heading = await screen.findByRole('heading', { level: 3, name: new RegExp(`^${title}`) });
+  return heading.closest('article')!;
+}
+
 async function pickAndUpload(partNo: number, file: File): Promise<void> {
-  const card = (await screen.findByRole('heading', { name: new RegExp(`Step ${partNo} of 8`) })).closest('li')!;
-  const input = within(card).getByLabelText(/Choose a video from this device/);
+  const card = await zoneCard(guideFor(partNo)!.title);
+  const input = within(card).getByLabelText(/Upload .* clip/);
   fireEvent.change(input, { target: { files: [file] } });
   fireEvent.click(await within(card).findByRole('button', { name: 'Upload this clip' }));
 }
@@ -38,7 +54,7 @@ async function pickAndUpload(partNo: number, file: File): Promise<void> {
 describe('consent and session creation', () => {
   it('requires consent before a session can be created and sends nothing until then', async () => {
     render(<App />);
-    const start = screen.getByRole('button', { name: 'Start session' });
+    const start = startButton();
     expect((start as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(start);
     expect(backend.calls).toHaveLength(0);
@@ -47,9 +63,10 @@ describe('consent and session creation', () => {
 
   it('creates the session with the configured consent version and keeps the token out of the DOM and URLs', async () => {
     render(<App />);
+    fireEvent.click(screen.getByRole('radio', { name: /Guided clips/ }));
     fireEvent.change(screen.getByLabelText(/Seller listing text/), { target: { value: 'Clean 2014 hatchback' } });
-    fireEvent.click(screen.getByLabelText('I understand and agree.'));
-    fireEvent.click(screen.getByRole('button', { name: 'Start session' }));
+    fireEvent.click(agree());
+    fireEvent.click(startButton());
     await screen.findByRole('heading', { name: 'Capture steps' });
 
     const create = backend.callsTo('POST', '/sessions').find((call) => call.url.endsWith('/sessions'))!;
@@ -69,31 +86,43 @@ describe('consent and session creation', () => {
   it('shows a rate-limit message when session creation is refused', async () => {
     vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ code: 'RATE_LIMITED', detail: '' }), { status: 429, headers: { 'Retry-After': '120' } }));
     render(<App />);
-    fireEvent.click(screen.getByLabelText('I understand and agree.'));
-    fireEvent.click(screen.getByRole('button', { name: 'Start session' }));
+    fireEvent.click(agree());
+    fireEvent.click(startButton());
     expect((await screen.findByRole('alert')).textContent).toContain('120 seconds');
   });
 });
 
 describe('guide steps', () => {
-  it('shows eight canonical steps with server states and underbody safety wording', async () => {
+  it('lists the eight canonical zones with server states, the optional zones last, and the underbody safety wording', async () => {
     seedSession();
     render(<App />);
     await screen.findByRole('heading', { name: 'Capture steps' });
-    for (let n = 1; n <= 8; n += 1) expect(screen.getByRole('heading', { name: new RegExp(`Step ${n} of 8`) })).toBeTruthy();
+    const nav = screen.getByRole('navigation', { name: 'Zones' });
+    const zones = within(nav).getAllByRole('button');
+    expect(zones).toHaveLength(8);
+    expect(zones.map((zone) => zone.querySelector('.zt')!.textContent)).toEqual([
+      'Driver side', 'Passenger side', 'Front and rear, with glass', 'Tires', 'Engine bay', 'Underbody, low sweep', 'DashboardOptional', 'InteriorOptional',
+    ]);
     expect(screen.getAllByText('Not filmed yet')).toHaveLength(8);
-    fireEvent.click(within(screen.getByRole('heading', { name: /Step 7 of 8/ }).closest('li')!).getByRole('button', { name: 'Show guide' }));
-    expect(screen.getByText(/Stay standing and keep your whole body outside the car/)).toBeTruthy();
-    expect(screen.getByText(/Do not crawl, kneel under, lie down, or reach beneath the vehicle/)).toBeTruthy();
-    expect(screen.getByRole('img', { name: /never go under the car/ })).toBeTruthy();
+    expect(zones.filter((zone) => zone.getAttribute('aria-current') === 'step')).toHaveLength(1);
+    expect(zones[0]!.getAttribute('aria-current')).toBe('step');
+    // The progress line follows the selected zone's position in the display order, not its part number.
+    expect(screen.getByText(/Zone 1 of 8 \u00b7 Driver side/)).toBeTruthy();
+    const underbody = await zoneCard('Underbody');
+    expect(zones[5]!.getAttribute('aria-current')).toBe('step');
+    expect(screen.getByText(/Zone 6 of 8 \u00b7 Underbody, low sweep/)).toBeTruthy();
+    expect(within(underbody).getByText(/Stay standing and keep your whole body outside the car/)).toBeTruthy();
+    expect(within(underbody).getByText(/Do not crawl, kneel under, lie down, or reach beneath the vehicle/)).toBeTruthy();
+    expect(within(underbody).getByRole('img', { name: /never go under the car/ })).toBeTruthy();
+    expect(within(underbody).getByText(/Stay standing outside, phone low/)).toBeTruthy();
   });
 
   it('offers part-specific file fallbacks that accept video and can open the phone camera', async () => {
     seedSession();
     render(<App />);
-    const card = (await screen.findByRole('heading', { name: /Step 1 of 8/ })).closest('li')!;
-    const camera = within(card).getByLabelText(/Record with phone camera app/) as HTMLInputElement;
-    const choose = within(card).getByLabelText(/Choose a video from this device/) as HTMLInputElement;
+    const card = await zoneCard('Driver side');
+    const camera = within(card).getByLabelText(/Record driver side/) as HTMLInputElement;
+    const choose = within(card).getByLabelText(/Upload driver side clip/) as HTMLInputElement;
     expect(camera.accept).toBe('video/*');
     expect(camera.getAttribute('capture')).toBe('environment');
     expect(choose.accept).toBe('video/*');
@@ -107,11 +136,11 @@ describe('skip and finish', () => {
   it('skips a zone only after confirmation and shows it as skipped from server state', async () => {
     seedSession();
     render(<App />);
-    const card = (await screen.findByRole('heading', { name: /Step 1 of 8/ })).closest('li')!;
+    const card = await zoneCard('Driver side');
     fireEvent.click(within(card).getByRole('button', { name: 'Skip this zone' }));
     expect(backend.callsTo('POST', '/skip')).toHaveLength(0);
     fireEvent.click(within(card).getByRole('button', { name: /Yes, skip Driver side/ }));
-    await waitFor(() => expect(within(card).getByTestId('state-1').textContent).toBe('Skipped'));
+    await waitFor(() => expect(screen.getByTestId('state-1').textContent).toBe('Skipped'));
     expect(backend.callsTo('POST', '/skip')).toHaveLength(1);
     expect(screen.getByText(/Skipped zones:/).parentElement!.textContent).toContain('Driver side');
   });
@@ -159,7 +188,7 @@ describe('skip and finish', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Yes, finish' }));
     await screen.findByText(/Capture is finished/);
     expect(backend.callsTo('POST', '/finalize')).toHaveLength(1);
-    await waitFor(() => expect(screen.getAllByText('Skipped')).toHaveLength(8));
+    await waitFor(() => expect(within(screen.getByRole('navigation', { name: 'Zones' })).getAllByText('Skipped')).toHaveLength(8));
     await screen.findByText(/Your report is being built/);
     expect(backend.callsTo('GET', '/progress').length).toBeGreaterThan(0);
   });
@@ -178,7 +207,7 @@ describe('resume after reload', () => {
     backend.holdPuts = false;
 
     render(<App />);
-    const card = (await screen.findByRole('heading', { name: /Step 1 of 8/ })).closest('li')!;
+    const card = await zoneCard('Driver side');
     await within(card).findByText(/An upload for this zone was interrupted/);
     expect((screen.getByRole('button', { name: 'Finish capture' }) as HTMLButtonElement).disabled).toBe(true);
 
@@ -204,11 +233,11 @@ describe('stranded upload', () => {
     backend.uploads.set(uploadId, { id: uploadId, partId: backend.parts[0].id, partNo: 1, size: 10, state: 'open', pieces: new Map() });
     seedSession(); // no upload record in sessionStorage
     render(<App />);
-    const card = (await screen.findByRole('heading', { name: /Step 1 of 8/ })).closest('li')!;
+    const card = await zoneCard('Driver side');
     await within(card).findByText(/no details for/);
     expect((screen.getByRole('button', { name: 'Finish capture' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(within(card).getByRole('button', { name: 'Discard stranded upload' }));
-    await waitFor(() => expect(within(card).getByTestId('state-1').textContent).toBe('Not filmed yet'));
+    await waitFor(() => expect(screen.getByTestId('state-1').textContent).toBe('Not filmed yet'));
     expect(backend.callsTo('DELETE', `/uploads/${uploadId}`)).toHaveLength(1);
     expect(backend.parts[0].active_upload_id).toBeNull();
     await waitFor(() => expect((screen.getByRole('button', { name: 'Finish capture' }) as HTMLButtonElement).disabled).toBe(false));
@@ -223,18 +252,18 @@ describe('error handling', () => {
     const alert = await screen.findByText('Your session has expired or was lost');
     expect(alert.closest('[role="alert"]')!.textContent).toContain('cannot be recovered from another tab or device');
     fireEvent.click(screen.getByRole('button', { name: 'Start a new session' }));
-    expect(((await screen.findByRole('button', { name: 'Start session' })) as HTMLButtonElement).disabled).toBe(true);
+    expect(((await screen.findByRole('button', { name: /^Continue with/ })) as HTMLButtonElement).disabled).toBe(true);
     expect(sessionStorage.getItem('upclose.session.v1')).toBeNull();
   });
 
   it('explains a 409 by refreshing instead of showing a stale state', async () => {
     seedSession();
     render(<App />);
-    const card = (await screen.findByRole('heading', { name: /Step 1 of 8/ })).closest('li')!;
+    const card = await zoneCard('Driver side');
     backend.parts[0].state = 'skipped'; // changed elsewhere; the page has not polled yet
     fireEvent.click(within(card).getByRole('button', { name: 'Skip this zone' }));
     fireEvent.click(within(card).getByRole('button', { name: /Yes, skip Driver side/ }));
-    await waitFor(() => expect(within(card).getByTestId('state-1').textContent).toBe('Skipped'));
+    await waitFor(() => expect(screen.getByTestId('state-1').textContent).toBe('Skipped'));
   });
 
   it('explains 413 for an oversized declared clip', async () => {
@@ -272,7 +301,7 @@ describe('error handling', () => {
       if (url.includes('/skip')) return new Response(JSON.stringify({ code: 'NOT_FOUND', detail: 'secret internals' }), { status: 404 });
       return original(url, init);
     });
-    const card = (await screen.findByRole('heading', { name: /Step 1 of 8/ })).closest('li')!;
+    const card = await zoneCard('Driver side');
     fireEvent.click(within(card).getByRole('button', { name: 'Skip this zone' }));
     fireEvent.click(within(card).getByRole('button', { name: /Yes, skip Driver side/ }));
     const notice = await within(card).findByText('Not found');

@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../App';
 import { ApiError, createApi } from '../api/client';
+import { CheckoutReturn } from '../components/CheckoutReturn';
 import { ProgressPanel, isSafeCheckoutUrl } from '../components/ProgressPanel';
 import { useSession } from '../session/useSession';
 import { FakeBackend, syntheticVerdict } from '../testing/fakeBackend';
@@ -53,9 +54,9 @@ describe('free verdict card', () => {
     backend.holdPuts = true;
     seedSession();
     render(<App />);
-    const card = (await screen.findByRole('heading', { name: /Step 2 of 8/ })).closest('li')!;
-    fireEvent.click(within(card).getByRole('button', { name: 'Show guide' }));
-    fireEvent.change(within(card).getByLabelText(/Choose a video from this device/), { target: { files: [video(2000)] } });
+    fireEvent.click(within(await screen.findByRole('navigation', { name: 'Zones' })).getByRole('button', { name: /Passenger side/ }));
+    const card = (await screen.findByRole('heading', { level: 3, name: /^Passenger side/ })).closest('article')!;
+    fireEvent.change(within(card).getByLabelText(/Upload passenger side clip/), { target: { files: [video(2000)] } });
     fireEvent.click(await within(card).findByRole('button', { name: 'Upload this clip' }));
     const cancel = await within(card).findByRole('button', { name: 'Cancel and retake' });
     const slotBefore = screen.getByTestId('free-verdict-slot');
@@ -72,9 +73,8 @@ describe('free verdict card', () => {
     expect(document.activeElement).toBe(cancel);
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByRole('alertdialog')).toBeNull();
-    // Above the steps in document order.
-    const steps = screen.getByRole('heading', { name: 'Capture steps' });
-    expect(slotBefore.compareDocumentPosition(steps) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Below the active zone card, so filling it never pushes the record controls down.
+    expect(card.compareDocumentPosition(slotBefore) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect((slotBefore.querySelector('details') as HTMLDetailsElement).open).toBe(false);
   }, 15000);
 
@@ -143,9 +143,10 @@ describe('free verdict card', () => {
     render(<App />);
     const slot = await openVerdict();
     const passenger = within(slot).getByTestId('locked-passenger_side');
-    expect(passenger.textContent).toContain('Passenger side: 2 findings');
+    expect(passenger.textContent).toContain('Passenger side');
+    expect(passenger.textContent).toContain('2 findings');
     expect(within(passenger).getByRole('img', { name: 'Locked' })).toBeTruthy();
-    expect(within(slot).getByTestId('locked-tires').textContent).toContain('Tires: 1 finding.');
+    expect(within(slot).getByTestId('locked-tires').textContent).toContain('1 finding');
     expect(passenger.textContent).not.toMatch(/rust|severity|dent|scratch/i);
   });
 
@@ -196,20 +197,20 @@ describe('report state and checkout', () => {
   it('shows building, then a authenticated report button and unlock button once ready', async () => {
     await finalizedApp('building');
     await screen.findByText(/Your report is being built/);
-    expect(screen.queryByRole('button', { name: 'Unlock full report' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Unlock full report/ })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Open your free report' })).toBeNull();
 
     backend.report = { slug: 'slug-abc', state: 'ready', unlocked: false };
     const button = await screen.findByRole('button', { name: 'Open your free report' }, { timeout: 5000 });
     expect(button.getAttribute('href')).toBeNull();
     expect(document.body.innerHTML).not.toContain(backend.token);
-    expect(screen.getByRole('button', { name: 'Unlock full report' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Unlock full report/ })).toBeTruthy();
   }, 15000);
 
   it('shows an honest message when the report failed and offers no unlock', async () => {
     await finalizedApp('failed');
     expect((await screen.findByRole('alert')).textContent).toContain('could not be built');
-    expect(screen.queryByRole('button', { name: 'Unlock full report' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Unlock full report/ })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Open your free report' })).toBeNull();
   });
 
@@ -221,7 +222,7 @@ describe('report state and checkout', () => {
     render(<ProgressPanel api={api} progress={{ state: 'finalized', free_verdict: null, report: { slug: 'slug-abc', state: 'ready', unlocked: false }, parts: backend.parts }}
       onRefresh={() => {}} onUnauthorized={() => {}} navigate={navigate} />);
     expect(backend.callsTo('POST', '/checkout')).toHaveLength(0);
-    fireEvent.click(screen.getByRole('button', { name: 'Unlock full report' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Unlock full report/ }));
     await waitFor(() => expect(navigate).toHaveBeenCalledWith('https://checkout.test/c/cs_test_123'));
     const [call] = backend.callsTo('POST', '/checkout');
     expect(call.url).toBe('/api/v1/reports/slug-abc/checkout');
@@ -233,7 +234,7 @@ describe('report state and checkout', () => {
     for (const report of [null, { slug: 's', state: 'building' as const, unlocked: false }, { slug: 's', state: 'failed' as const, unlocked: false }]) {
       const { unmount } = render(<ProgressPanel api={apiForTests()} progress={{ state: 'finalized', free_verdict: null, report, parts: [] }}
         onRefresh={() => {}} onUnauthorized={() => {}} />);
-      expect(screen.queryByRole('button', { name: 'Unlock full report' })).toBeNull();
+      expect(screen.queryByRole('button', { name: /^Unlock full report/ })).toBeNull();
       unmount();
     }
   });
@@ -244,7 +245,7 @@ describe('report state and checkout', () => {
     backend.report = { slug: 'slug-abc', state: 'building', unlocked: false }; // the page believes ready, the server disagrees
     render(<ProgressPanel api={apiForTests()} progress={{ state: 'finalized', free_verdict: null, report: { slug: 'slug-abc', state: 'ready', unlocked: false }, parts: [] }}
       onRefresh={onRefresh} onUnauthorized={() => {}} navigate={navigate} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Unlock full report' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Unlock full report/ }));
     expect((await screen.findByText('The report is not ready yet')).closest('[role="alert"]')).toBeTruthy();
     expect(navigate).not.toHaveBeenCalled();
     expect(onRefresh).toHaveBeenCalled();
@@ -256,7 +257,7 @@ describe('report state and checkout', () => {
     const navigate = vi.fn();
     render(<ProgressPanel api={apiForTests()} progress={{ state: 'finalized', free_verdict: null, report: { slug: 'slug-abc', state: 'ready', unlocked: false }, parts: [] }}
       onRefresh={() => {}} onUnauthorized={() => {}} navigate={navigate} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Unlock full report' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Unlock full report/ }));
     await screen.findByText('Checkout could not be opened');
     expect(navigate).not.toHaveBeenCalled();
     expect(isSafeCheckoutUrl('https://checkout.stripe.com/c/pay/x')).toBe(true);
@@ -271,31 +272,47 @@ describe('report state and checkout', () => {
     const onUnauthorized = vi.fn();
     render(<ProgressPanel api={apiForTests()} progress={{ state: 'finalized', free_verdict: null, report: { slug: 'slug-abc', state: 'ready', unlocked: false }, parts: [] }}
       onRefresh={() => {}} onUnauthorized={onUnauthorized} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Unlock full report' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Unlock full report/ }));
     await waitFor(() => expect(onUnauthorized).toHaveBeenCalled());
   });
 });
 
 describe('checkout return page', () => {
-  it('grants nothing, reads nothing from the address, and calls no API', () => {
-    sessionStorage.clear();
+  afterEach(() => vi.useRealTimers());
+
+  it('grants nothing, reads nothing from the address, calls no API, then routes home without a remembered report', () => {
+    vi.useFakeTimers();
     window.history.pushState({}, '', '/checkout/return?result=success&session_id=cs_test_SECRET');
+    const navigate = vi.fn();
     try {
-      render(<App />);
-      expect(screen.getByRole('heading', { name: 'Returned from checkout' })).toBeTruthy();
+      render(<CheckoutReturn navigate={navigate} redirectMs={1000} />);
+      expect(screen.getByRole('heading', { name: 'Checking your payment…' })).toBeTruthy();
       const text = document.body.textContent ?? '';
-      expect(text).toContain('cannot tell whether a payment went through');
-      expect(text).toContain('Payment is confirmed by our payment provider');
+      expect(text).toContain('Opening this page does not unlock anything');
       expect(text).not.toMatch(/payment (was )?successful|you(?:'ve| have) unlocked|unlocked!|thank you for your purchase/i);
       expect(text).not.toContain('cs_test_SECRET');
       expect(screen.queryByRole('button', { name: /unlock/i })).toBeNull();
+      expect(navigate).not.toHaveBeenCalled();
+      act(() => { vi.advanceTimersByTime(1000); });
+      expect(navigate).toHaveBeenCalledWith('/');
       expect(backend.calls).toHaveLength(0);
     } finally {
       window.history.pushState({}, '', '/');
     }
   });
 
-  it('renders identically for result=cancel and result=success', () => {
+  it('routes back to the report that was sent to checkout', () => {
+    vi.useFakeTimers();
+    sessionStorage.setItem('upclose.checkout.pending.v1', 'slug-abc');
+    const navigate = vi.fn();
+    render(<CheckoutReturn navigate={navigate} redirectMs={500} />);
+    expect(screen.getByRole('link', { name: 'Back to your report' }).getAttribute('href')).toBe('/report/slug-abc');
+    act(() => { vi.advanceTimersByTime(500); });
+    expect(navigate).toHaveBeenCalledWith('/report/slug-abc');
+    expect(backend.calls).toHaveLength(0);
+  });
+
+  it('renders identically for result=cancel and result=success, and is wired into the app route', () => {
     const textFor = (query: string): string => {
       window.history.pushState({}, '', `/checkout/return${query}`);
       const { unmount } = render(<App />);
@@ -305,9 +322,54 @@ describe('checkout return page', () => {
     };
     try {
       expect(textFor('?result=success')).toBe(textFor('?result=cancel'));
+      expect(textFor('?result=cancel')).toContain('Checking your payment');
     } finally {
       window.history.pushState({}, '', '/');
     }
+  });
+});
+
+describe('progress stages and zones', () => {
+  const part = (n: number, zone: string, state: string, reason: string | null = null) => ({ id: `00000000-0000-4000-8000-00000000000${n}`, part_no: n, zone, state, reason, active_upload_id: null }) as never;
+
+  it('shows stages only as far as the data supports and puts optional zones last, tagged', () => {
+    const progress = { state: 'finalized', free_verdict: null, report: null, parts: [
+      part(8, 'interior', 'pending'), part(1, 'driver_side', 'processed'), part(7, 'dash_electrical', 'pending'), part(2, 'passenger_side', 'processing'),
+    ] } as never;
+    render(<ProgressPanel api={apiForTests()} progress={progress} onRefresh={() => {}} onUnauthorized={() => {}} />);
+    const stages = within(screen.getByRole('list', { name: 'Progress' })).getAllByRole('listitem');
+    expect(stages.map((li) => li.textContent?.replace(' (done)', ''))).toEqual(['Uploaded', 'Car found', 'Checking damage', 'Report']);
+    expect(stages[0].className).toBe('on');
+    expect(stages[1].className).toBe('on');
+    expect(stages[2].getAttribute('aria-current')).toBe('step');
+    expect(stages[3].className).toBe('');
+    const rows = within(screen.getByRole('list', { name: 'Processing status by zone' })).getAllByRole('listitem').map((li) => li.textContent);
+    expect(rows[2]).toContain('Dashboard');
+    expect(rows[2]).toContain('Optional');
+    expect(rows[3]).toContain('Interior');
+    expect(rows[3]).toContain('Optional');
+    expect(rows[0]).not.toContain('Optional');
+  });
+
+  it('shows no stage as current before anything reached the server, and no invented progress', () => {
+    const progress = { state: 'capturing', free_verdict: null, report: null, parts: [part(1, 'driver_side', 'pending')] } as never;
+    render(<ProgressPanel api={apiForTests()} progress={progress} onRefresh={() => {}} onUnauthorized={() => {}} />);
+    const stages = within(screen.getByRole('list', { name: 'Progress' })).getAllByRole('listitem');
+    expect(stages.some((li) => li.className !== '')).toBe(false);
+    expect(document.querySelector('[aria-current="step"]')).toBeNull();
+  });
+
+  it('offers film-again guidance for a blur/quality failure and plain reason text otherwise', () => {
+    const progress = { state: 'finalized', free_verdict: null, report: null, parts: [
+      part(1, 'driver_side', 'failed', 'MEDIA_TOO_BLURRY'), part(2, 'passenger_side', 'failed', 'INGEST_TIMEOUT'),
+    ] } as never;
+    render(<ProgressPanel api={apiForTests()} progress={progress} onRefresh={() => {}} onUnauthorized={() => {}} />);
+    expect(screen.getByTestId('progress-part-1').textContent).toContain('Too blurry');
+    expect(screen.getByTestId('progress-reason-1').textContent).toContain('Film this zone again');
+    expect(screen.getByTestId('progress-part-2').textContent).toContain('Could not check');
+    expect(screen.getByTestId('progress-reason-2').textContent).toContain('took too long');
+    expect(screen.getByTestId('progress-reason-2').textContent).not.toContain('Film this zone again');
+    expect(screen.getByTestId('progress-reason-2').textContent).toContain('not a clean result');
   });
 });
 
