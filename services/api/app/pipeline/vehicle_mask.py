@@ -154,7 +154,10 @@ class VehicleMaskHandler:
                     "budget_not_reserved", "standard_access_unverified", "model_unverified", "price_unverified"})
             if not terminal and lease.attempt < 3:
                 raise StageFailure(Failure("TRANSIENT")) from None
-            logging.warning("Vehicle mask failed: %s", type(error).__name__)
+            if isinstance(error, ProviderFailure):
+                logging.warning("Vehicle mask failed: %s code=%s http_status=%s http_status_class=%s", type(error).__name__, error.code, error.http_status, error.http_status_class)
+            else:
+                logging.warning("Vehicle mask failed: %s", type(error).__name__)
             return self._failure(plan, lease.job_id)
 
         def publish(db: DBSession) -> None:

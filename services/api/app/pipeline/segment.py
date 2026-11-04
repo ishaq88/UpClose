@@ -423,6 +423,7 @@ class SegmentHandler:
                               for item in result.observations]
                     masks.update({(f"s{still['frame_index']}-{item.track_id}", still["frame_index"]): item.mask for item in result.observations})
         except ProviderFailure as failure:
+            logging.warning("Segment request failed code=%s http_status=%s http_status_class=%s", failure.code, failure.http_status, failure.http_status_class)
             if failure.code in _NOT_RETRYABLE:
                 raise _Terminal(_NOT_RETRYABLE[failure.code], f"SEGMENT_{failure.code.upper()}") from None
             raise _Retryable(f"SEGMENT_{failure.code.upper()}"[:240], _QUEUE_CODE.get(failure.code, "SCHEMA_INVALID")) from None

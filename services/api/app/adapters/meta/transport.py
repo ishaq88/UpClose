@@ -102,11 +102,11 @@ class MetaSamSegmenter:
                                       {"Authorization": "Bearer " + self._api_key,
                                        "Content-Type": "application/json"}, TIMEOUT_SECONDS)
         if status in (401, 403):
-            raise ProviderFailure("standard_access_unverified")
+            raise ProviderFailure("standard_access_unverified", http_status=status)
         if status == 429 or status >= 500:
-            raise ProviderFailure("provider_timeout")
+            raise ProviderFailure("provider_timeout", http_status=status)
         if status != 200:
-            raise ProviderFailure("provider_failed")
+            raise ProviderFailure("provider_failed", http_status=status)
         try:
             payload = json.loads(raw)
         except ValueError:

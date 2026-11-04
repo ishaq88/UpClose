@@ -216,6 +216,34 @@ def test_timeout_holds_reservation_and_retry_charged_separately(db):
     assert service.operator_totals()["unknown_micro_usd"] == 5000
 
 
+def test_unknown_failure_reason_persisted_sanitized_and_still_unknown(db):
+    service = BudgetService(db, live())
+    req = request(db)
+    service.reserve(req)
+    service.mark_dispatched(req.attempt_id, req.lease_token)
+    service.mark_unknown(req.attempt_id, failure_code="provider_timeout", http_status=503)
+    calls, buckets = ledger(db)
+    assert calls[0].state == "unknown"  # never free, never settled
+    assert calls[0].actual_cost is None
+    assert calls[0].requested_units["failure"] == {"code": "provider_timeout", "http_status": 503, "http_status_class": "5xx"}
+    assert all(bucket.reserved_cents == 1 for bucket in buckets)
+    assert service.operator_totals()["unknown_micro_usd"] == 2500
+    # Unsafe code/status inputs are sanitized, never persisted verbatim.
+    service.mark_unknown(req.attempt_id, failure_code="Bearer payload-secret", http_status=999)
+    calls, _ = ledger(db)
+    assert calls[0].requested_units["failure"] == {"code": "provider_failed", "http_status": None, "http_status_class": None}
+    assert "payload-secret" not in str(calls[0].requested_units)
+    # Unknown without a failure (e.g. missing usage) writes no failure record.
+    req2 = request(db)
+    service.reserve(req2)
+    service.mark_dispatched(req2.attempt_id, req2.lease_token)
+    service.mark_unknown(req2.attempt_id)
+    calls, _ = ledger(db)
+    by_attempt = {c.attempt_id: c for c in calls}
+    assert "failure" not in by_attempt[req2.attempt_id].requested_units
+    assert by_attempt[req2.attempt_id].state == "unknown"
+
+
 def test_settlement_exact_idempotent_conflicting_and_after_deletion(db):
     service = BudgetService(db, live())
     req = request(db, units=UsageUnits(frames=120))

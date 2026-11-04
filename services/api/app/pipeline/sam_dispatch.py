@@ -30,9 +30,16 @@ def run_sam_request(lease: Lease, segmenter: Segmenter, media: MediaRef, request
         raise ProviderFailure(code) from None
     try:
         result = segmenter.segment(media, effective_prompt, request_id)
-    except BaseException:
+    except BaseException as error:
+        failure_code = error.code if isinstance(error, ProviderFailure) else None
+        http_status = error.http_status if isinstance(error, ProviderFailure) else None
+        if isinstance(error, ProviderFailure):
+            logging.warning('SAM request failed code=%s http_status=%s http_status_class=%s', failure_code, http_status, error.http_status_class)
         try:
-            budget_service.mark_unknown(attempt_id)
+            try:
+                budget_service.mark_unknown(attempt_id, failure_code=failure_code, http_status=http_status)
+            except TypeError:
+                budget_service.mark_unknown(attempt_id)
         except BudgetError:
             pass
         raise

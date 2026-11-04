@@ -102,10 +102,21 @@ def test_masked_png_mime_and_hash_are_bound_to_submitted_bytes() -> None:
 
 
 @pytest.mark.parametrize("status,code", [(401, "standard_access_unverified"), (403, "standard_access_unverified"),
-                                         (429, "provider_timeout"), (500, "provider_timeout"), (400, "provider_failed")])
+                                         (429, "provider_timeout"), (500, "provider_timeout"), (503, "provider_timeout"), (400, "provider_failed")])
 def test_http_failures_are_sanitized_codes(status: int, code: str) -> None:
-    with pytest.raises(ProviderFailure, match=code):
+    with pytest.raises(ProviderFailure, match=code) as caught:
         segmenter(lambda *a: (status, b"{}")).segment(image_media(), "rust_a", REQUEST)
+    assert caught.value.code == code
+    assert caught.value.http_status == status
+    assert caught.value.http_status_class == f"{status // 100}xx"
+
+
+def test_provider_failure_status_is_typed_and_sanitized() -> None:
+    assert ProviderFailure("provider_timeout").http_status is None
+    assert ProviderFailure("provider_timeout").http_status_class is None
+    assert ProviderFailure("provider_failed", http_status=999).http_status is None
+    assert ProviderFailure("provider_failed", http_status=True).http_status is None  # bool is not a status
+    assert ProviderFailure("provider_failed", http_status=404).http_status_class == "4xx"
 
 
 def test_incomplete_wrong_model_and_malformed_fail_closed() -> None:
@@ -132,13 +143,43 @@ def test_unknown_prompt_and_storage_failure_never_calls_provider() -> None:
         segmenter(fake, BrokenStorage()).segment(image_media(), "rust_a", REQUEST)
 
 
+def test_dispatch_persists_and_logs_sanitized_failure_code_and_status(caplog) -> None:
+    import logging
+    from datetime import timedelta
+    from app.jobs.queue import Lease
+    from app.pipeline.sam_dispatch import run_sam_request
+
+    captured: dict = {}
+
+    class FakeBudget:
+        def reserve(self, request): captured["attempt_id"] = request.attempt_id
+        def mark_dispatched(self, attempt_id, lease_token): return True
+        def mark_unknown(self, attempt_id, *, failure_code=None, http_status=None):
+            captured.update(attempt_id=attempt_id, failure_code=failure_code, http_status=http_status)
+        def settle(self, attempt_id, **kwargs): raise AssertionError("failed request must not settle")
+
+    now = datetime.now(timezone.utc)
+    lease = Lease(job_id=uuid4(), session_id=uuid4(), token=uuid4(), attempt=1, stage="segment",
+                  subject_kind="concept_run", subject_id="x", lease_until=now + timedelta(minutes=2),
+                  deadline=now + timedelta(minutes=5))
+    secret_payload = b'{"error": "PAYLOAD-SECRET-TEXT"}'
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(ProviderFailure, match="provider_timeout"):
+            run_sam_request(lease, segmenter(lambda *a: (503, secret_payload)), image_media(), REQUEST, "rust_a", FakeBudget())  # type: ignore[arg-type]
+    assert captured["failure_code"] == "provider_timeout" and captured["http_status"] == 503
+    assert "provider_timeout" in caplog.text and "503" in caplog.text and "5xx" in caplog.text
+    assert TEST_KEY not in caplog.text and "PAYLOAD-SECRET-TEXT" not in caplog.text
+    assert TEST_KEY not in str(captured) and "PAYLOAD-SECRET-TEXT" not in str(captured)
+
+
 def test_urllib_unreachable_maps_to_provider_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     def boom(*args: object, **kwargs: object) -> None:
         raise urllib.error.URLError("unreachable")
 
     monkeypatch.setattr("app.adapters.meta.transport.urllib.request.urlopen", boom)
-    with pytest.raises(ProviderFailure, match="provider_timeout"):
+    with pytest.raises(ProviderFailure, match="provider_timeout") as caught:
         urllib_transport("https://api.meta.ai/v1/responses", b"{}", {}, 1.0)
+    assert caught.value.http_status is None and caught.value.http_status_class is None
 
 
 def test_budget_config_from_settings_tunable_caps_and_demo_gate() -> None:

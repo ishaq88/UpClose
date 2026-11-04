@@ -57,7 +57,7 @@ class FakeBudget:
     def settle(self, attempt_id, **kwargs):  # noqa: ANN001
         self.events.append("settle")
 
-    def mark_unknown(self, attempt_id):  # noqa: ANN001
+    def mark_unknown(self, attempt_id, **kwargs):  # noqa: ANN001
         self.events.append("unknown")
 
 

@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_CEILING
 from hashlib import sha256
 import json
+import re
 from typing import Literal
 from uuid import UUID
 
@@ -185,6 +186,24 @@ def _owned_job(db: DBSession, session_id: UUID, job_id: UUID, lease_token: UUID,
     return job
 
 
+_SAFE_FAILURE_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def sanitized_failure_record(failure_code: str | None, http_status: int | None) -> dict | None:
+    """Sanitized provider-failure record for `model_calls.requested_units["failure"]`.
+
+    Only an enumerated safe code and a numeric HTTP status/class survive; payloads,
+    keys, headers and media references are never accepted here. Returns None when
+    there is no failure to record (e.g. unknown usage on a successful response).
+    """
+    if failure_code is None:
+        return None
+    code = failure_code if isinstance(failure_code, str) and _SAFE_FAILURE_CODE.match(failure_code) else "provider_failed"
+    status = http_status if type(http_status) is int and 100 <= http_status <= 599 else None
+    return {"code": code, "http_status": status,
+            "http_status_class": None if status is None else f"{status // 100}xx"}
+
+
 def _metadata(call: ModelCall) -> dict:
     metadata = call.requested_units.get("budget")
     if not isinstance(metadata, dict) or metadata.get("version") != 1:
@@ -287,13 +306,24 @@ class BudgetService:
             call.state = "unknown"
             return True
 
-    def mark_unknown(self, attempt_id: UUID) -> None:
-        """Timeout/crash ambiguity never releases funds."""
+    def mark_unknown(self, attempt_id: UUID, *, failure_code: str | None = None,
+                     http_status: int | None = None) -> None:
+        """Timeout/crash ambiguity never releases funds.
+
+        Ledger state stays ``unknown`` (never free, never settled). When the
+        dispatch raised a `ProviderFailure`, its sanitized code/status are
+        persisted under ``requested_units["failure"]`` so a later reader can
+        see *why* the call is unknown without any payload/key/media text.
+        Reassigning the JSONB dict is required for SQLAlchemy change tracking.
+        """
+        record = sanitized_failure_record(failure_code, http_status)
         with self.sessions.begin() as db:
             _advisory(db, attempt_id)
             call = db.scalar(select(ModelCall).where(ModelCall.attempt_id == attempt_id))
             if call is None:
                 raise BudgetError("reservation_not_found")
+            if record is not None:
+                call.requested_units = {**(call.requested_units or {}), "failure": record}
             if call.state == "reserved":
                 call.state = "unknown"
 

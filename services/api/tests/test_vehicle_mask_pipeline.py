@@ -210,7 +210,7 @@ class RecordingBudget:
         self.events.append(("dispatch", attempt_id))
         return not self.deny
     def settle(self, attempt_id, **kwargs): self.events.append(("settle", attempt_id))
-    def mark_unknown(self, attempt_id): self.events.append(("unknown", attempt_id))
+    def mark_unknown(self, attempt_id, **kwargs): self.events.append(("unknown", attempt_id))
 
 
 @pytest.mark.parametrize("deny", [False, True])

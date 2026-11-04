@@ -11,10 +11,20 @@ from .types import MaskRaster, MediaRef, ProviderUsage, SegmentObservation, Segm
 
 
 class ProviderFailure(Exception):
-    """Safe stable code only: never include provider output or media references."""
-    def __init__(self, code: str) -> None:
+    """Safe stable code only: never include provider output or media references.
+
+    ``http_status`` is the optional transport HTTP status (int 100-599) when the
+    failure came from an HTTP response; it carries no payload, header or key text.
+    Network failures and non-HTTP failures leave it ``None``.
+    """
+    def __init__(self, code: str, *, http_status: int | None = None) -> None:
         self.code = code
+        self.http_status = http_status if type(http_status) is int and 100 <= http_status <= 599 else None
         super().__init__(code)
+
+    @property
+    def http_status_class(self) -> str | None:
+        return None if self.http_status is None else f"{self.http_status // 100}xx"
 
 
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024
