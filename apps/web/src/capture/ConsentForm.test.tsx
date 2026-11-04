@@ -27,6 +27,14 @@ describe('ConsentForm account link', () => {
     expect(document.body.innerHTML).not.toContain('account-token');
   });
 
+  it('shows provenance-neutral start copy without asserting findings are synthetic', () => {
+    setup(null);
+    expect(screen.getByText(/Automatic area recognition is not connected — mark sections yourself or use guided clips/)).toBeTruthy();
+    expect(screen.getByText(/Your report labels whether findings are synthetic test data or real model output/)).toBeTruthy();
+    expect(screen.getByText(/Findings are labeled in the report as synthetic test data or real model output/)).toBeTruthy();
+    expect(screen.queryByText(/Current findings are synthetic test data/)).toBeNull();
+  });
+
   it('sends no account token when signed out, and no request at all without consent', async () => {
     const { createSession } = setup(null);
     fireEvent.click(screen.getByRole('button', { name: 'Continue with one video' }));

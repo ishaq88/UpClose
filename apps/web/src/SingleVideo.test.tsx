@@ -30,7 +30,9 @@ describe('flexible capture', () => {
     expect(backend.callsTo('POST', '/sessions')[0]?.body).toMatchObject({ capture_mode: 'single_video' });
     view.unmount(); render(<App />);
     await screen.findByRole('heading', { name: 'One video' });
-    expect(screen.getByText(/Automatic area recognition and real AI damage analysis are not connected/)).toBeTruthy();
+    expect(screen.getByText(/Automatic area recognition is not connected — mark sections yourself or use guided clips/)).toBeTruthy();
+    expect(screen.getByText(/Your report labels whether findings are synthetic test data or real model output/)).toBeTruthy();
+    expect(screen.queryByText(/Findings are synthetic test data/)).toBeNull();
     expect((await screen.findByLabelText('Record one video with phone camera')).getAttribute('capture')).toBe('environment');
   });
 

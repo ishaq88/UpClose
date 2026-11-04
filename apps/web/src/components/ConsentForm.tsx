@@ -56,7 +56,7 @@ export function ConsentForm({ api, onCreated }: Props): ReactElement {
             <span className="muted">Short clips with a 3D guide for each zone. Skip any zone.</span>
           </label>
         </fieldset>
-        <p className="notice notice-warn">Real AI analysis and automatic area recognition are not connected. Current findings are synthetic test data, not an assessment of your car.</p>
+        <p className="notice notice-warn">Automatic area recognition is not connected — mark sections yourself or use guided clips. Your report labels whether findings are synthetic test data or real model output.</p>
         <div className="field">
           <label htmlFor="listing">Seller listing text <span className="optional">(optional)</span></label>
           <textarea id="listing" value={listing} onChange={(event) => setListing(event.target.value)} maxLength={MAX_LISTING_CHARS} rows={3}
@@ -65,7 +65,7 @@ export function ConsentForm({ api, onCreated }: Props): ReactElement {
         </div>
         <div className="consent">
           <ul id="consent-terms" className="consent-list">
-            <li>Videos I record or select are uploaded to this prototype for processing. Current findings are synthetic test data.</li>
+            <li>Videos I record or select are uploaded to this prototype for processing. Findings are labeled in the report as synthetic test data or real model output.</li>
             <li>Results are a screening aid only. They do not replace an inspection by a qualified mechanic.</li>
             <li>I can request deletion from this session. Closing the tab may lose my access to those controls.</li>
           </ul>

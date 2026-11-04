@@ -56,7 +56,7 @@ export function SingleVideoCapture({ upload, capturing }: { upload: SourceUpload
       <h2 id="single-video-heading" className="page-title">One video</h2>
       <p className="muted">Record a continuous walkaround or upload a partial clip. MP4, MOV or WebM, up to 180 seconds and 200 MiB. A 30–60 second clip is welcome.</p>
     </div>
-    <p className="notice notice-warn">Automatic area recognition and real AI damage analysis are not connected. Findings are synthetic test data. Unmapped areas remain unassessed; no missing area is treated as damage-free.</p>
+    <p className="notice notice-warn">Automatic area recognition is not connected — mark sections yourself or use guided clips. Your report labels whether findings are synthetic test data or real model output. Unmapped areas remain unassessed; no missing area is treated as damage-free.</p>
     <div className="prog">
       <div className="stack">
         <div className="card stack">
