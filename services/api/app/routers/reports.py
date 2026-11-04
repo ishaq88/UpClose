@@ -2,15 +2,16 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Header, Response
+from fastapi import APIRouter, Depends, Header, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from app.adapters.storage import ObjectStorage
 from sqlalchemy.orm import Session as DBSession, sessionmaker
 
 from app.contracts.enums import ReportState
-from app.contracts.reports import FreeReport, PaidReport, ReportStatus
+from app.contracts.reports import FreeReport, PaidReport, ReportStatus, ShareDisableResponse, ShareEnableResponse
 from app.report import REPORT_HEADERS, render_report
 from app.report.render import render_report_status
+from app.routers.sessions import owner_bearer
 from app.services.problems import not_found
 from app.services.reports import ReportService
 from app.services.snapshots import Provenance
@@ -60,5 +61,13 @@ def create_report_router(factory: sessionmaker[DBSession], settings: Settings, s
                   authorization: Annotated[str | None, Header()] = None) -> Response:
         url = service.frame_url(slug, finding_id, authorization)
         return RedirectResponse(url, status_code=302, headers={key: value for key, value in REPORT_HEADERS.items() if key != "Content-Type"})
+
+    @router.post("/api/v1/reports/{slug}/share", response_model=ShareEnableResponse)
+    def enable_share(slug: str, token: Annotated[str, Depends(owner_bearer)]) -> ShareEnableResponse:
+        return service.enable_share(slug, token)
+
+    @router.delete("/api/v1/reports/{slug}/share", response_model=ShareDisableResponse)
+    def disable_share(slug: str, token: Annotated[str, Depends(owner_bearer)]) -> ShareDisableResponse:
+        return service.disable_share(slug, token)
 
     return router

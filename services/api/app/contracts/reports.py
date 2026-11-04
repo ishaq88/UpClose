@@ -94,11 +94,26 @@ class FreeReport(ContractModel):
     slug: Annotated[str, Field(min_length=1, max_length=128)]
     revision_id: UUID
     state: ReportState
+    vehicle_label: Annotated[str, Field(min_length=1, max_length=80)] | None = None
     coverage: tuple[PublicCoverage, ...]
     part1_score: Score | None
     findings: tuple[FreeFinding, ...]
     locked_zones: tuple[LockedZoneSummary, ...]
     part1_summary: Annotated[str, Field(max_length=2000)]
+
+
+class ShareEnableResponse(ContractModel):
+    """Owner-only share enable result. `url` is the existing public report
+    path (`/r/{slug}`); `public_access_active` is
+    `settings.public_sharing_enabled and share_enabled`, so callers can tell
+    whether the link actually opens today while the global gate is off."""
+    url: Annotated[str, Field(min_length=1, max_length=256)]
+    share_enabled: Literal[True] = True
+    public_access_active: bool
+
+
+class ShareDisableResponse(ContractModel):
+    share_enabled: Literal[False] = False
 
 
 class Part1Verdict(ContractModel):
@@ -116,6 +131,7 @@ class PaidReport(ContractModel):
     slug: Annotated[str, Field(min_length=1, max_length=128)]
     revision_id: UUID
     state: ReportState
+    vehicle_label: Annotated[str, Field(min_length=1, max_length=80)] | None = None
     coverage: tuple[PublicCoverage, ...]
     scores: ScoreResult
     findings: tuple[PaidFinding, ...]

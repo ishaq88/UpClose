@@ -7,12 +7,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as DBSession, sessionmaker
 
 from app.contracts.enums import ReportState, SessionState
-from app.contracts.reports import FreeReport, PaidReport, ReportStatus
+from app.contracts.reports import FreeReport, PaidReport, ReportStatus, ShareDisableResponse, ShareEnableResponse
 from app.models import Report, ReportRevision, Session
 from app.services.privacy import approved_for, PrivacyService
 from app.adapters.storage import ObjectStorage, StorageError
 from app.services.accounts import AccountService
-from app.services.auth import authenticate, bearer_token
+from app.services.auth import authenticate, bearer_token, owner_session
 from app.services.billing import has_active_entitlement
 from app.services.problems import ProblemError, not_found
 from app.services.snapshots import Provenance, RevisionSnapshot, build_free_report, build_paid_report, load_snapshot
@@ -98,7 +98,7 @@ class ReportService:
                     or snapshot.rendered_at is None):
                 raise ValueError("ready snapshot is incomplete")
             dto = assemble_report(snapshot, scope)
-            dto = dto.model_copy(update={'findings': tuple(f.model_copy(update={'evidence_available':
+            dto = dto.model_copy(update={'vehicle_label': owner.vehicle_label, 'findings': tuple(f.model_copy(update={'evidence_available':
                 approved_for(db, owner.id, revision.id, f.id) is not None}) for f in dto.findings)})
             if isinstance(dto, PaidReport):
                 dto = dto.model_copy(update={'candidates': tuple(f.model_copy(update={'evidence_available':
@@ -107,6 +107,40 @@ class ReportService:
             # Malformed persisted content must never escape in error details or partial output.
             raise unavailable() from None
         return ReportRead(dto, snapshot.manifest.provenance)
+
+    def _owned_report(self, db: DBSession, slug: str, token: str) -> tuple[Session, Report]:
+        # Owner token ONLY: `owner_session` authenticates the session token
+        # (401 for account/invalid tokens) and locks the owner row, following
+        # the write convention of 404 for deleting/deleted sessions.
+        owner = owner_session(db, token, lock=True)
+        report = db.scalar(select(Report).where(Report.share_slug == slug, Report.session_id == owner.id).with_for_update())
+        if report is None:
+            raise not_found()
+        return owner, report
+
+    def enable_share(self, slug: str, token: str) -> ShareEnableResponse:
+        """Enable mechanic sharing for a ready, actively paid report (idempotent)."""
+        with self.factory.begin() as db:
+            _owner, report = self._owned_report(db, slug, token)
+            if not has_active_entitlement(db, report.id):
+                raise ProblemError(403, "SHARE_REQUIRES_PAID", "Paid report required",
+                                   "Sharing is available only for an unlocked paid report.")
+            revision = db.get(ReportRevision, report.current_revision_id) if report.current_revision_id else None
+            if (revision is None or revision.report_id != report.id or revision.session_id != report.session_id
+                    or revision.state != ReportState.READY):
+                raise ProblemError(409, "REPORT_NOT_READY", "Report not ready",
+                                   "The report is not ready to share yet.")
+            report.share_enabled = True
+            return ShareEnableResponse(url=f"/r/{report.share_slug}", share_enabled=True,
+                                       public_access_active=bool(self.settings.public_sharing_enabled and report.share_enabled))
+
+    def disable_share(self, slug: str, token: str) -> ShareDisableResponse:
+        """Disable mechanic sharing (idempotent; no entitlement/readiness gate,
+        so access can always be revoked, including after a refund)."""
+        with self.factory.begin() as db:
+            _owner, report = self._owned_report(db, slug, token)
+            report.share_enabled = False
+            return ShareDisableResponse(share_enabled=False)
 
     def frame_url(self, slug: str, finding_id: UUID, authorization: str | None = None) -> str:
         with self.factory.begin() as db:
