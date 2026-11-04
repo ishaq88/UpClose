@@ -29,8 +29,20 @@ class ProviderFailure(Exception):
 
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_MASK_PIXELS = 1280 * 1280
-MAX_TOTAL_MASK_PIXELS = 16 * 1024 * 1024
 MAX_RECORDS = 16000
+
+
+def _per_mask_pixel_limit(media: MediaRef) -> int:
+    width, height = media.display_size
+    return min(MAX_MASK_PIXELS, width * height)
+
+
+def _total_mask_pixel_limit(media: MediaRef) -> int:
+    # Frame-aware DoS bound: each frame may contribute at most one
+    # maximum-size mask, so the total scales with the frame count.
+    return MAX_MASK_PIXELS * len(media.frames)
+
+
 _BOX = re.compile(r"<\|box;([^|]*)\|>")
 _MASK = re.compile(r"<\|mask;([^|]*)\|>")
 
@@ -58,15 +70,17 @@ def _preflight(output: str, media: MediaRef) -> None:
             fields = _fields(token.group(1))
             if (int(fields["w"]), int(fields["h"])) != media.display_size:
                 raise ProviderFailure("source_dimensions_mismatch")
+        per_mask_limit = _per_mask_pixel_limit(media)
+        total_limit = _total_mask_pixel_limit(media)
         total_area = 0
         for token in masks:
             fields = _fields(token.group(1))
             height, width, _ = fields["data"].split(",", 2)
             area = int(height) * int(width)
-            if int(height) <= 0 or int(width) <= 0 or area > MAX_MASK_PIXELS:
+            if int(height) <= 0 or int(width) <= 0 or area > per_mask_limit:
                 raise ProviderFailure("mask_limit")
             total_area += area
-            if total_area > MAX_TOTAL_MASK_PIXELS:
+            if total_area > total_limit:
                 raise ProviderFailure("mask_limit")
     except (KeyError, ValueError) as error:
         raise ProviderFailure("malformed_record") from None

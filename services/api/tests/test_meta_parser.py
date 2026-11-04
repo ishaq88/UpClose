@@ -180,6 +180,64 @@ def test_video_documented_track_cap_is_explicit() -> None:
     assert result.limits_encountered == ("documented_video_track_cap_reached",)
 
 
+# Synthetic all-ones 4x3 mask payload from the pinned parser's test-only encoder.
+_FULL_4X3_PAYLOAD = "!!!!!'y7K#I-="
+
+
+def _full_frame_line(frame_index: int, track: str = "1", *, width: int = 4, height: int = 3,
+                     payload: str = _FULL_4X3_PAYLOAD) -> str:
+    return (f"<{frame_index}f>{track}<|box;x1=0;y1=0;x2={width - 1};y2={height - 1};"
+            f"w={width};h={height}|><|mask;x=0;y=0;data={height},{width},{payload}|>")
+
+
+def _video_media(frame_count: int, *, width: int = 4, height: int = 3) -> MediaRef:
+    return MediaRef(media_key="synthetic/input.mp4", kind="video", stored_width=width,
+                    stored_height=height,
+                    frames=[{"frame_index": index, "timestamp_ms": index * 33,
+                             "frame_key": f"synthetic/frame-{index}.png"}
+                            for index in range(frame_count)])
+
+
+def test_multiframe_near_full_frame_masks_parse_all_frames() -> None:
+    result = normalize_output("\n".join(_full_frame_line(index) for index in range(46)),
+                              _video_media(46), "vehicle", REQUEST, usage=ProviderUsage())
+    assert [item.frame_index for item in result.observations] == list(range(46))
+    assert all(item.mask.width == 4 and item.mask.height == 3 for item in result.observations)
+    assert all(item.mask.pixels == bytes([1] * 12) for item in result.observations)
+    assert result.limits_encountered == ()
+
+
+def test_incident_scale_vehicle_masks_pass_preflight() -> None:
+    from app.adapters.meta import parser as module
+
+    incident = _video_media(46, width=1280, height=720)
+    # Declared dims only: preflight runs before any mask decode.
+    output = "\n".join(
+        f"<{index}f>1<|box;x1=0;y1=0;x2=1279;y2=719;w=1280;h=720|>"
+        "<|mask;x=0;y=0;data=720,1280,!synthetic|>" for index in range(46))
+    assert module._per_mask_pixel_limit(incident) == 1280 * 720
+    assert module._total_mask_pixel_limit(incident) == 46 * 1280 * 1280
+    module._preflight(output, incident)
+
+
+def test_single_mask_larger_than_frame_raises_mask_limit() -> None:
+    output = ("<0f>1<|box;x1=0;y1=0;x2=3;y2=2;w=4;h=3|>"
+              "<|mask;x=0;y=0;data=4,4,!synthetic|>")
+    with pytest.raises(ProviderFailure, match="mask_limit"):
+        normalize_output(output, media(), "vehicle", REQUEST, usage=ProviderUsage())
+
+
+def test_total_mask_pixels_over_frame_aware_limit_raises_mask_limit() -> None:
+    # Each mask is exactly at the per-mask cap, so only the frame-aware
+    # total (3 frames x per-mask cap) can reject the fourth mask.
+    record = ("<|box;x1=0;y1=0;x2=1279;y2=1279;w=1280;h=1280|>"
+              "<|mask;x=0;y=0;data=1280,1280,!synthetic|>")
+    output = "<0f>" + ",".join(f"{track}{record}" for track in range(1, 5))
+    with pytest.raises(ProviderFailure, match="mask_limit"):
+        normalize_output(output, _video_media(3, width=1280, height=1280),
+                         "vehicle", REQUEST, usage=ProviderUsage())
+
+
 def test_track_ids_cannot_escape_safe_sort_conversion() -> None:
     output = RESPONSES["image"].output_text.replace("<0f>7", "<0f>" + "9" * 129)
     with pytest.raises(ProviderFailure, match="invalid_track_id"):
