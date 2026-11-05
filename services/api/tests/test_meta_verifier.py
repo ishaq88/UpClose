@@ -69,7 +69,7 @@ def execute(candidate, response=None, *, grant=lambda *_: True, transport=None):
     response = payload(candidate) if response is None else response
     adapter = MetaSparkVerifier(api_key="synthetic-test-key", storage=Storage(),
                                transport=transport or (lambda *_: (200, json.dumps(response).encode())))
-    # Synthetic bound only: prepare() always leaves it None, which fails closed live.
+    # Synthetic bound override keeps these transport tests independent of the image-size bound.
     prepared = replace(adapter.prepare(candidate, (candidate,), "Synthetic rubric"), input_token_bound=4096)
     return adapter.execute(prepared, uuid4(), grant=grant)
 
@@ -81,10 +81,11 @@ def test_wire_exact_crop_and_private_repr(candidate):
     prepared = adapter.prepare(candidate, (candidate,), "Synthetic rubric")
     body = json.loads(prepared.body)
     assert body["model"] == MODEL and body["store"] is False
-    assert body["max_output_tokens"] == 1024
+    assert body["max_output_tokens"] == module.MAX_OUTPUT_TOKENS == 8192
     assert body["text"]["format"]["strict"] is True
     assert body["text"]["format"]["schema"] == verdict_schema()
-    assert prepared.input_token_bound is None
+    # One token per text byte plus one per 8x8 block: 20x12 -> 4, crop 10x6 -> 1.
+    assert prepared.input_token_bound == len(prepared.body) - sum(len(row["image_url"]) for row in body["input"][0]["content"][1:]) + 5
     assert prepared.sha256 == hashlib.sha256(prepared.body).hexdigest()
     assert "data:image" not in repr(prepared) and "Ignore prior" not in repr(prepared)
     content = body["input"][0]["content"]
@@ -241,18 +242,82 @@ def test_usage_unknown_is_never_zero_and_overage_is_preserved(candidate, usage, 
     assert (result.input_tokens, result.cached_input_tokens, result.output_tokens) == expected
 
 
+def test_dated_model_echo_and_message_without_status_are_accepted(candidate):
+    body = payload(candidate)
+    body["model"] = MODEL + "-2026-10-01"
+    del body["output"][1]["status"]
+    assert execute(candidate, body).raw_verdict["verdict"] == "confirmed"
+
+
+def test_rejected_response_logs_structure_only(candidate, caplog):
+    body = payload(candidate)
+    body["model"] = "muse-spark-9"
+    body["output"][1]["content"][0]["text"] = json.dumps(verdict(candidate, evidence_note="private-note"))
+    with pytest.raises(ProviderFailure, match="malformed_record"):
+        execute(candidate, body)
+    assert "step=envelope" in caplog.text and "muse-spark-9" in caplog.text
+    assert "private-note" not in caplog.text and "data:image" not in caplog.text
+
+
 def test_missing_key_fails_closed():
     with pytest.raises(ProviderFailure, match="standard_access_unverified"):
         MetaSparkVerifier(api_key="", storage=Storage())
 
-def test_live_dispatch_fails_closed_without_token_bound(candidate):
+def test_prepared_bound_is_positive_and_still_needs_grant(candidate):
     calls = []
     adapter = MetaSparkVerifier(api_key="test", storage=Storage(), transport=lambda *args: calls.append(args))
     prepared = adapter.prepare(candidate, (candidate,), "rubric")
-    assert prepared.input_token_bound is None
+    assert type(prepared.input_token_bound) is int and prepared.input_token_bound > 0
     with pytest.raises(ProviderFailure) as error:
-        adapter.execute(prepared, uuid4(), grant=lambda *_: calls.append("grant") or True)
-    assert str(error.value) == "budget_not_reserved" and error.value.__cause__ is None and not calls
+        adapter.execute(prepared, uuid4(), grant=lambda *_: calls.append("grant") or False)
+    assert str(error.value) == "budget_not_reserved" and calls == ["grant"]
+
+
+class RecordingBudget:
+    def __init__(self, *, dispatch=True):
+        self.events, self.dispatch = [], dispatch
+    def reserve(self, request):
+        self.events.append(("reserve", request.model, request.units.input_tokens, request.units.output_tokens))
+    def mark_dispatched(self, attempt_id, lease_token):
+        self.events.append(("dispatch",))
+        return self.dispatch
+    def mark_unknown(self, attempt_id, **kwargs):
+        self.events.append(("unknown", kwargs.get("failure_code")))
+    def settle(self, attempt_id, *, actual_units, actual_micro_usd, outcome, evidence_code):
+        self.events.append(("settle", actual_units.input_tokens, actual_units.output_tokens, actual_micro_usd))
+
+
+def lease():
+    from types import SimpleNamespace
+    from datetime import datetime, timedelta, timezone
+    return SimpleNamespace(session_id=uuid4(), job_id=uuid4(), attempt=1, token=uuid4(),
+                           deadline=datetime.now(timezone.utc) + timedelta(minutes=5))
+
+
+def test_spark_raw_verifier_reserves_bound_then_settles_reported_usage(candidate):
+    from app.pipeline.verify import SparkRawVerifier
+    budget = RecordingBudget()
+    spark = MetaSparkVerifier(api_key="test", storage=Storage(),
+                              transport=lambda *_: (200, json.dumps(payload(candidate)).encode()))
+    raw = SparkRawVerifier(spark, budget).verify_raw(candidate, (candidate,), "rubric", lease=lease())
+    assert raw["verdict"] == "confirmed" and raw["severity"] == 2
+    (kind, model, bound, output), dispatch, settle = budget.events
+    assert (kind, model, output) == ("reserve", MODEL, module.MAX_OUTPUT_TOKENS) and bound > 0 and dispatch == ("dispatch",)
+    # 113 uncached x 1.25 + 10 cached x 0.15 + 65 x 4.25 micro-USD, rounded up by the ledger pricing.
+    assert settle[:3] == ("settle", 123, 65) and settle[3] > 0
+
+
+def test_spark_raw_verifier_marks_failed_dispatch_unknown_and_denied_grant_never_calls(candidate):
+    from app.pipeline.verify import SparkRawVerifier
+    budget, calls = RecordingBudget(), []
+    spark = MetaSparkVerifier(api_key="test", storage=Storage(), transport=lambda *a: (calls.append(a) or (500, b"")))
+    with pytest.raises(ProviderFailure, match="provider_failed"):
+        SparkRawVerifier(spark, budget).verify_raw(candidate, (candidate,), "rubric", lease=lease())
+    assert budget.events[-1] == ("unknown", "provider_failed") and len(calls) == 1
+    denied = RecordingBudget(dispatch=False)
+    with pytest.raises(ProviderFailure, match="budget_not_reserved"):
+        SparkRawVerifier(spark, denied).verify_raw(candidate, (candidate,), "rubric", lease=lease())
+    assert len(calls) == 1 and not any(event[0] == "unknown" for event in denied.events)
 
 
 @pytest.mark.parametrize("bound", [0, -1, True, "4096", 1.5])

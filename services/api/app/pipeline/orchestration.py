@@ -120,8 +120,18 @@ MASKED_FIXTURE_PROVIDERS: Mapping[str, str] = {
 }
 
 
-def masked_orchestration_context(live: bool = False) -> OrchestrationContext:
-    return OrchestrationContext(providers=dict(MASKED_LIVE_PROVIDERS if live else MASKED_FIXTURE_PROVIDERS))
+# Only a worker that actually installs the Spark verifier may freeze this identity: coverage
+# treats any verifier other than the live pending one as able to resolve candidates.
+SPARK_VERIFIER: str = canonical_hash({"provider": "meta-spark-verifier", "model": "muse-spark-1.3",
+                                      "provenance": "live", "version": 1,
+                                      "input_token_bound": "text-bytes+8x8-pixel-blocks"})
+
+
+def masked_orchestration_context(live: bool = False, *, spark_verifier: bool = False) -> OrchestrationContext:
+    providers = dict(MASKED_LIVE_PROVIDERS if live else MASKED_FIXTURE_PROVIDERS)
+    if live and spark_verifier:
+        providers["verifier"] = SPARK_VERIFIER
+    return OrchestrationContext(providers=providers)
 
 
 def live_orchestration_context(config: PipelineConfig | None = None) -> OrchestrationContext:

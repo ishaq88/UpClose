@@ -1,9 +1,9 @@
-"""Offline-tested Spark transport; runtime integration remains disabled.
+"""Spark verifier transport with a conservative input-token upper bound.
 
-No image token upper bound is asserted: prepare always leaves input_token_bound as
-None and execute fails closed with budget_not_reserved until a defensible bound
-exists, so no prepared request can currently reach the provider.
-live dispatch. Prepared requests contain private image bytes and must never be logged.
+Meta publishes no image tokenizer, so the bound charges one token per UTF-8 byte of
+text and one token per 8x8 pixel block of every image (far above patch tokenizers);
+budget reservation uses it and settlement uses reported usage. Prepared requests
+contain private image bytes and must never be logged.
 """
 from __future__ import annotations
 
@@ -11,7 +11,9 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import math
+import re
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -33,7 +35,9 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_PIXELS = 3840 * 2160
 MAX_REQUEST_BYTES = 24 * 1024 * 1024
 MAX_RESPONSE_BYTES = 128 * 1024
-MAX_OUTPUT_TOKENS = 1024
+# muse-spark reasons before answering; 1024 ended every live reply `incomplete` with only reasoning.
+MAX_OUTPUT_TOKENS = 8192
+IMAGE_TOKEN_BLOCK_PIXELS = 8 * 8
 Transport = Callable[[str, bytes, dict[str, str], float], tuple[int, bytes]]
 
 
@@ -66,6 +70,28 @@ def _transport(url: str, body: bytes, headers: dict[str, str], timeout: float) -
         return error.code, b""
     except (urllib.error.URLError, OSError, TimeoutError):
         raise ProviderFailure("provider_timeout") from None
+
+
+_SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
+
+
+def _same_model(model: object) -> bool:
+    return model == MODEL or (isinstance(model, str) and model.startswith(MODEL + "-")
+                              and _SAFE_TOKEN.fullmatch(model) is not None)
+
+
+def _response_shape(payload: object) -> dict[str, object]:
+    """Sanitized response structure for diagnostics; only short identifier tokens survive."""
+    def token(value: object) -> str | None:
+        return value if isinstance(value, str) and _SAFE_TOKEN.fullmatch(value) else None
+    if not isinstance(payload, dict):
+        return {"payload": type(payload).__name__}
+    items = payload.get("output") if isinstance(payload.get("output"), list) else []
+    return {"status": token(payload.get("status")), "model": token(payload.get("model")),
+            "items": [(token(i.get("type")), token(i.get("role")), token(i.get("status")),
+                       [token(c.get("type")) for c in i.get("content", []) if isinstance(c, dict)]
+                       if isinstance(i.get("content"), list) else None)
+                      for i in items[:8] if isinstance(i, dict)]}
 
 
 def verdict_schema() -> dict[str, object]:
@@ -126,6 +152,7 @@ class MetaSparkVerifier:
                                        math.ceil((box.x + box.w) * image.width),
                                        math.ceil((box.y + box.h) * image.height)))
                     images = []
+                    image_tokens = sum(math.ceil(p.width * p.height / IMAGE_TOKEN_BLOCK_PIXELS) for p in (image, crop))
                     for picture in (image, crop):
                         output = io.BytesIO()
                         picture.save(output, format="JPEG", quality=90)
@@ -154,8 +181,10 @@ class MetaSparkVerifier:
                           separators=(",", ":")).encode()
         if len(body) > MAX_REQUEST_BYTES:
             raise ProviderFailure("malformed_record")
+        text_bytes = len(body) - sum(len(item["image_url"]) for item in images)
         return PreparedVerification(body, hashlib.sha256(body).hexdigest(), candidate.id,
-                                    frozenset(row.id for row in context))
+                                    frozenset(row.id for row in context),
+                                    input_token_bound=text_bytes + image_tokens)
 
     def execute(self, prepared: PreparedVerification, request_id: UUID, *,
                 grant: Callable[[PreparedVerification, UUID], bool]) -> VerificationResponse:
@@ -178,32 +207,43 @@ class MetaSparkVerifier:
             raise ProviderFailure("provider_timeout") from None
         if status != 200:
             raise ProviderFailure("standard_access_unverified" if status in (401, 403) else "provider_failed")
+        step, shape = "size", {}
         try:
             if len(raw) > MAX_RESPONSE_BYTES:
                 raise ValueError
+            step = "json"
             payload = json.loads(raw)
-            if payload.get("status") != "completed" or payload.get("model") != MODEL:
+            step = "envelope"
+            shape = _response_shape(payload)
+            # A dated snapshot of the same model (same documented price) may be echoed.
+            if payload.get("status") != "completed" or not _same_model(payload.get("model")):
                 raise ValueError
+            step = "output_items"
             messages = []
             for item in payload["output"]:
                 if item.get("type") == "reasoning":
                     continue
-                if item.get("type") != "message" or item.get("role") != "assistant" or item.get("status") != "completed":
+                if (item.get("type") != "message" or item.get("role") != "assistant"
+                        or item.get("status", "completed") != "completed"):
                     raise ValueError
                 messages.append(item)
+            step = "content"
             if len(messages) != 1 or len(messages[0]["content"]) != 1:
                 raise ValueError
             content = messages[0]["content"][0]
             if content.get("type") != "output_text" or not isinstance(content.get("text"), str):
                 raise ValueError
+            step = "verdict_json"
             raw_verdict = json.loads(content["text"])
             if not isinstance(raw_verdict, dict) or set(raw_verdict) != set(verdict_schema()["properties"]):
                 raise ValueError
+            step = "verdict_rules"
             verdict = parse_verdict(raw_verdict)
             if verdict.finding_id != prepared.finding_id or (verdict.duplicate_of is not None
                                                             and (verdict.duplicate_of not in prepared.context_ids
                                                                  or verdict.duplicate_of == prepared.finding_id)):
                 raise ValueError
+            step = "usage"
             usage = payload.get("usage")
             if usage is None:
                 usage = {}
@@ -222,4 +262,6 @@ class MetaSparkVerifier:
                 raise ValueError
             return VerificationResponse(json.loads(verdict.model_dump_json()), MODEL, inputs, cached, outputs)
         except (ValueError, TypeError, KeyError, AttributeError, VerdictRejected):
+            # Structure only (step, model id, item/part types): never verdict text or image data.
+            logging.warning("Spark response rejected step=%s shape=%s", step, shape)
             raise ProviderFailure("malformed_record") from None

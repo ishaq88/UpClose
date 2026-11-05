@@ -20,12 +20,13 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping, Sequence
-from typing import Protocol
-from uuid import UUID
+from typing import TYPE_CHECKING, Protocol
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DBSession, sessionmaker
 
+from app.adapters.meta.parser import ProviderFailure
 from app.contracts.enums import FindingStatus, PartState, SessionState
 from app.contracts.evidence import Finding
 from app.domain.rubrics import render_rubric_text
@@ -37,6 +38,12 @@ from app.models import Finding as FindingRow, Observation, Part, PipelineRun, Se
 from app.pipeline.ingest import PublicationRejected
 from app.pipeline.orchestration import (VERIFICATION_FAILED, VERIFICATION_PROVENANCE, VERIFY_GROUP,
                                         OrchestrationContext, advance_part, apply_to_row, to_contract_finding)
+
+from app.services.budgets import BudgetError
+
+if TYPE_CHECKING:
+    from app.adapters.meta.verifier import MetaSparkVerifier, PreparedVerification
+    from app.services.budgets import BudgetService
 
 MAX_ATTEMPTS = 3
 _LIVE = (SessionState.CAPTURING, SessionState.FINALIZED)
@@ -80,10 +87,61 @@ class LivePendingVerifier:
                 "subzone": None, "component_id": None, "duplicate_of": None, "flags": []}
 
 
+class SparkRawVerifier:
+    """Live Spark verdicts behind per-candidate budget reservation; output stays untrusted raw JSON."""
+    requires_lease = True
+
+    def __init__(self, spark: "MetaSparkVerifier", budget_service: "BudgetService") -> None:
+        self.spark, self.budget = spark, budget_service
+
+    def verify_raw(self, candidate: Finding, context: tuple[Finding, ...], rubric: str, *,
+                   lease: Lease) -> Mapping[str, object]:
+        from app.adapters.meta.verifier import MODEL
+        from app.services.budgets import (PRICE_VERSION as BUDGET_PRICE_VERSION, ReservationRequest, UsageUnits,
+                                          documented_prices, price_usage)
+
+        if lease.session_id is None:
+            raise ProviderFailure("budget_not_reserved")
+        prepared = self.spark.prepare(candidate, context, rubric)
+        attempt_id = uuid5(NAMESPACE_URL, f"budget:{lease.job_id}:{lease.attempt}:verify:{candidate.id}")
+        dispatched = False
+
+        def grant(item: "PreparedVerification", _request_id: UUID) -> bool:
+            nonlocal dispatched
+            units = UsageUnits(input_tokens=item.input_token_bound or 0, output_tokens=item.max_output_tokens)
+            self.budget.reserve(ReservationRequest(lease.session_id, lease.job_id, attempt_id, lease.token,
+                                                   lease.deadline, MODEL, BUDGET_PRICE_VERSION, units))
+            dispatched = self.budget.mark_dispatched(attempt_id, lease.token)
+            return dispatched
+
+        try:
+            response = self.spark.execute(prepared, uuid5(NAMESPACE_URL, f"verify:{lease.job_id}:{lease.attempt}:{candidate.id}"),
+                                          grant=grant)
+        except ProviderFailure as error:
+            logging.warning("Spark request failed code=%s", error.code)
+            if dispatched:
+                try:
+                    self.budget.mark_unknown(attempt_id, failure_code=error.code, http_status=error.http_status)
+                except BudgetError:
+                    pass
+            raise
+        if response.input_tokens is None or response.output_tokens is None:
+            self.budget.mark_unknown(attempt_id)  # unknown billing stays reserved, never free
+        else:
+            actual = UsageUnits(input_tokens=response.input_tokens, cached_input_tokens=response.cached_input_tokens or 0,
+                                output_tokens=response.output_tokens)
+            try:
+                self.budget.settle(attempt_id, actual_units=actual, actual_micro_usd=price_usage(MODEL, actual, documented_prices()),
+                                   outcome="succeeded", evidence_code="meta-usage-reported")
+            except BudgetError:
+                logging.warning("Budget settlement deferred; ledger keeps unknown charge.")
+        return response.raw_verdict
+
+
 class _Retryable(Exception):
-    def __init__(self, reason: str, queue_code: str) -> None:
+    def __init__(self, reason: str, queue_code: str, *, retry: bool = True) -> None:
         super().__init__(reason)
-        self.reason, self.queue_code = reason, queue_code
+        self.reason, self.queue_code, self.retry = reason, queue_code, retry
 
 
 class VerifyHandler:
@@ -98,9 +156,9 @@ class VerifyHandler:
             return loaded
         run_id, part_id, members = loaded
         try:
-            resolutions = self._verify(members)
+            resolutions = self._verify(members, lease)
         except _Retryable as error:
-            if lease.attempt < MAX_ATTEMPTS:
+            if error.retry and lease.attempt < MAX_ATTEMPTS:
                 raise StageFailure(Failure(error.queue_code)) from None
             return self._unverified(lease, run_id, part_id, members, error.reason)  # budget spent: fail closed
         return self._resolved(lease, run_id, part_id, members, resolutions)
@@ -150,22 +208,26 @@ class VerifyHandler:
 
     # ---- phase 2: verifier call and validation (no transaction open)
 
-    def _verify(self, members: list[Finding]) -> tuple[FindingResolution, ...]:
+    def _verify(self, members: list[Finding], lease: Lease) -> tuple[FindingResolution, ...]:
         rubrics = self.ctx.config.rubrics
         context = tuple(members)
         verdicts = []
+        extra = {"lease": lease} if getattr(self.verifier, "requires_lease", False) else {}
         try:
             for candidate in members:
                 rubric = rubrics.get(candidate.concept)
                 if rubric is None:
                     raise _Retryable(RUBRIC_UNAVAILABLE, "UNSUPPORTED")  # same budget, then unverified
-                raw = self.verifier.verify_raw(candidate, context, render_rubric_text(rubric))
+                raw = self.verifier.verify_raw(candidate, context, render_rubric_text(rubric), **extra)
                 verdicts.append(parse_verdict(raw))
             return resolve_group(members, verdicts, rubrics)
         except VerdictRejected:
             raise _Retryable(VERDICT_INVALID, "SCHEMA_INVALID") from None
         except _Retryable:
             raise
+        except ProviderFailure as error:
+            # A billed response we rejected (or absent budget/access) would repeat its charge: fail closed now.
+            raise _Retryable(VERIFIER_ERROR, "TRANSIENT", retry=error.retryable) from None
         except Exception as error:
             logging.warning("Verifier call failed: %s", type(error).__name__)
             raise _Retryable(VERIFIER_ERROR, "TRANSIENT") from None

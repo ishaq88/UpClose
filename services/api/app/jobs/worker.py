@@ -171,11 +171,12 @@ def build_registry(settings: Settings, factory: object) -> StageRegistry:
             raise SystemExit("Live worker refused: " + error)
         from app.adapters.meta.transport import MetaSamSegmenter
         from app.pipeline.orchestration import masked_orchestration_context, load_pipeline_config
-        from app.pipeline.verify import LivePendingVerifier
+        from app.adapters.meta.verifier import MetaSparkVerifier
+        from app.pipeline.verify import SparkRawVerifier
         from app.services.budgets import BudgetService, budget_config_from_settings
 
         budget = BudgetService(factory, budget_config_from_settings(settings))  # type: ignore[arg-type]
-        source_ctx = masked_orchestration_context(live=True)
+        source_ctx = masked_orchestration_context(live=True, spark_verifier=True)
         texts = {row.prompt_id: row.text for row in load_pipeline_config().prompts.prompts}
         texts["vehicle"] = "car"  # Group A; all damage prompts use its committed masked inputs
         key = settings.model_api_key.get_secret_value() if settings.model_api_key else ""
@@ -186,7 +187,8 @@ def build_registry(settings: Settings, factory: object) -> StageRegistry:
 
         install_pipeline_handlers(registry, factory, S3Storage(settings), settings,
                                   source_ctx, segmenter_factory=live_factory,
-                                  verifier=LivePendingVerifier(), budget_service=budget)
+                                  verifier=SparkRawVerifier(MetaSparkVerifier(api_key=key, storage=S3Storage(settings)), budget),
+                                  budget_service=budget)
     else:
         from app.pipeline.orchestration import masked_orchestration_context
 
