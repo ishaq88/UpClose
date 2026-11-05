@@ -4,6 +4,10 @@ Video-based used-car condition screening: film a car, get a private, evidence-li
 
 UpClose helps buyers and sellers document a used car's visible condition before an in-person inspection. It is a screening tool — it does not replace an inspection by a qualified mechanic.
 
+**Live site:** [tryupclose.pages.dev](https://tryupclose.pages.dev) · **Sample report:** [tryupclose.pages.dev/sample](https://tryupclose.pages.dev/sample/)
+
+The public site is the static landing page and a sample report. The inspection app itself (uploads, AI pipeline, private reports) runs on the local stack described in [Quick start](#quick-start) and [Running the live AI pipeline locally](#running-the-live-ai-pipeline-locally).
+
 ## What it does
 
 1. **Capture.** Record guided clips for eight areas of the car — driver side, passenger side, front and rear body, tires, dashboard, engine bay, underbody, and interior — or upload one continuous video (up to 3 minutes and 200 MiB). In a single video you can optionally mark sections so findings keep their original timestamps, and any uncovered areas can be filmed afterwards as guided follow-ups.
