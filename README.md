@@ -79,6 +79,61 @@ docker compose -f infra/compose.yaml stop
 
 Do not remove volumes unless you intend to discard local data.
 
+### Running the live AI pipeline locally
+
+The default stack is fully offline. To run real inference on your own footage, only the background worker is switched to live mode; the API stays in fixture mode and never receives a model key.
+
+1. Add to a local `.env` (never commit it): `MODEL_API_KEY=<your Meta API key>`, and, if the key is a non-Standard demo key, `MODEL_ALLOW_NON_STANDARD_DEMO=true`. Budget caps default to `MODEL_SESSION_BUDGET_CENTS=500` and `MODEL_DAILY_BUDGET_CENTS=5000`.
+2. Load `.env` into your shell, then start the worker with the live overlay:
+
+   ```powershell
+   docker compose -f infra/compose.yaml -f infra/compose.live-demo.yaml up -d --no-deps --force-recreate worker
+   docker compose -f infra/compose.yaml logs --tail 3 worker   # expect: Queue runner started (mode=live)
+   ```
+
+3. Optional for local demos: set `DEMO_FREE_UNLOCK=true` and an `OPERATOR_TOKEN` for the API, then recreate it (`up -d --no-deps --force-recreate api`). The first unlocks the full report without payment; the second enables the operator privacy review below.
+4. Evidence images appear in a report only after an operator has reviewed and approved a privacy derivative for each finding:
+
+   ```powershell
+   ./scripts/approve-derivatives.ps1 -SessionId <session id>            # writes previews to .tools/previews
+   ./scripts/approve-derivatives.ps1 -SessionId <session id> -Approve   # after checking every preview
+   ```
+
+Restart single services with `--no-deps`, and export the same environment each time: `docker compose up` on one service otherwise recreates its dependencies with default settings. Running `up -d worker` without the live overlay returns the worker to fixture mode, which is the spend kill-switch.
+
+### How long a report takes
+
+Measured on the local stack (8-core machine, live mode) with an 8-second, 720p clip of one side of a car (46 sampled frames):
+
+| Stage | Typical time |
+|---|---|
+| Upload and media normalization | ~30 s |
+| Vehicle segmentation and masking | 4–6 min |
+| Damage segmentation (5 concepts) | ~1 min |
+| Verification (about 10 s per candidate) | ~1 min |
+| Claims, scoring, narration, rendering | under 1 s |
+| **Total** | **about 7–8 minutes** |
+
+Expect to wait about 7–8 minutes for a short clip. The vehicle step dominates: the provider returns lossless-compressed masks for every frame, which are currently decoded on a single CPU core. Keep live clips around 10–15 seconds for now; time grows roughly linearly with clip length, and long clips can exceed the current job deadline and masked-video size limits. Fixture mode finishes in seconds.
+
+## How processing works
+
+Every inspection is an owner-only session. Media never passes through the API: the browser uploads directly to private object storage with presigned multipart URLs, can resume an interrupted upload, and the server verifies the stored object before accepting it.
+
+Work then runs as jobs in a PostgreSQL-backed queue. Each job holds a time-limited lease. A worker that loses its lease cannot publish results, and every publication runs in a single fenced transaction, so a job may run more than once without double-publishing or double-charging.
+
+1. **Ingest.** ffmpeg probes and normalizes each clip into a 720p proxy and samples frames (6 fps for walk-around clips). A quality check records blur and exposure problems; unusable footage is marked as such rather than scored.
+2. **Vehicle mask.** Meta SAM 3.1 segments the prompt "car" across the video. For each frame, the largest mask is taken as the inspected vehicle; frames where the car is not visible are blanked, and too few visible frames fails closed. SAM returns box-local masks capped at 1024 px, which are resampled onto their boxes. A masked copy of the video, with the vehicle kept and everything else neutral grey, is encoded for the next stage.
+3. **Damage segmentation.** SAM runs once per damage concept (rust, paint bubbling, dent, scratch) on the masked video only, so detections stay on the car. Every candidate keeps its frame, box, and exact mask as persisted evidence.
+4. **Verification.** Muse Spark judges each candidate from the full frame plus a crop of its box, against a written severity rubric for that concept. It answers in a strict JSON schema: confirmed, rejected, duplicate, or unverifiable, plus a 1–5 severity and the affected part when confirmed. The answer is validated before anything is written. A candidate that cannot be verified stays labelled "unverified" and never counts as clean.
+5. **Claims, score, narration, render.** Listing claims are checked against the evidence. A deterministic scoring engine turns verified findings into per-zone scores: severity × concept weight, deducted from 100 and capped. A zone is only scored when every required concept was assessed and every candidate resolved; partial or missing coverage is reported, never treated as clean. An overall index needs at least three scored zones. Repair ranges come from a versioned cost table, and only for repairs it supports; anything else is listed as "get a quote". The report is then frozen as an immutable revision.
+
+Guardrails that apply throughout:
+
+- **Spend control.** Every provider call reserves budget first: frames for SAM, and a conservative token upper bound for Spark. The call is then settled against the provider's reported usage, within per-session and daily caps. Only transport failures such as timeouts and 5xx responses are retried; a billed response that fails validation is not paid for again.
+- **Privacy.** No original frame is ever served publicly. Report images are operator-reviewed derivatives with the finding drawn on and any redactions applied, and approvals are immutable once granted.
+- **Honest output.** Model confidence is shown as uncalibrated, free previews cannot reach paid evidence, and payment status comes only from verified provider state.
+
 ## Configuration
 
 Configuration is via environment variables; `.env.example` lists the full surface with local development placeholders only. The settings that matter most:
@@ -129,7 +184,9 @@ scripts/        Local launch and verification scripts
 
 UpClose is a working prototype, and we want to be direct about what that means:
 
+- **Live pipeline works end to end locally.** On real footage of a heavily rusted car, the full live path ran with no retries: upload, SAM vehicle masking, SAM damage segmentation, Spark verification, scoring, and report rendering. SAM proposed six rust candidates. Spark confirmed three at severity 4 (roof edge, hood, and one more) and marked the others unverifiable from the footage, and the report shows each finding on its frame.
 - **Fixture results are synthetic.** The default offline mode exercises the complete flow — capture, upload, pipeline, scoring, report, payment, and deletion — with synthetic data. It demonstrates the product, not detection quality.
-- **Live AI quality is not yet validated.** The live pipeline path exists and is opt-in, but accuracy has not been measured against independently labeled real-world footage, so no detection-quality claims are made.
+- **Live AI quality is not yet validated.** Working end to end is not the same as measured accuracy: detection quality has not been evaluated against independently labeled real-world footage, so no accuracy claims are made.
+- **Known limits.** Vehicle mask decoding is single-threaded, which accounts for most of the 7–8 minute wait. The repair cost table only prices the repairs it has sourced figures for. A one-side video produces a zone result but never an overall index.
 - **Not a production system.** Local storage emulation does not establish production storage behavior, and real-device capture and payment fulfillment in a hosted environment remain to be proven end to end.
 - **Screening, not certification.** Even with validated models, a video screening cannot see everything an in-person mechanical inspection can.
