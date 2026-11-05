@@ -1,4 +1,5 @@
 """Strict normalization over Meta's pinned public parser, not a guessed codec."""
+import logging
 import re
 from uuid import UUID
 
@@ -25,6 +26,15 @@ class ProviderFailure(Exception):
     @property
     def http_status_class(self) -> str | None:
         return None if self.http_status is None else f"{self.http_status // 100}xx"
+
+    @property
+    def retryable(self) -> bool:
+        return self.code in RETRYABLE_CODES
+
+
+# Transport-level outcomes only. Every other code describes a response that was already
+# billed; re-calling with the same input repeats the same rejection and the same charge.
+RETRYABLE_CODES = frozenset({"provider_timeout", "provider_failed", "incomplete_response"})
 
 
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024
@@ -56,6 +66,20 @@ def _fields(body: str) -> dict[str, str]:
             raise ProviderFailure("malformed_record")
         result[key] = value
     return result
+
+
+def _resample(raster: bytes, width: int, height: int, to_width: int, to_height: int) -> bytes:
+    """Nearest-neighbour resize of a row-major binary raster; stays binary."""
+    columns = [x * width // to_width for x in range(to_width)]
+    rows: dict[int, bytes] = {}
+    out = bytearray()
+    for y in range(to_height):
+        source = y * height // to_height
+        if source not in rows:
+            row = raster[source * width:(source + 1) * width]
+            rows[source] = bytes(map(row.__getitem__, columns))
+        out += rows[source]
+    return bytes(out)
 
 
 def _preflight(output: str, media: MediaRef) -> None:
@@ -101,8 +125,9 @@ def normalize_output(
     except Exception:
         raise ProviderFailure("parser_error") from None
     # The upstream parser is permissive: a bad line can coexist with success.
-    # Reject all diagnostics so dropped candidates cannot silently look clean.
-    if parsed.diagnostics:
+    # Reject every error so dropped candidates cannot silently look clean.
+    # Warnings (ignored unknown fields/tokens) keep their record and are not fatal.
+    if any(item.severity != "warning" for item in parsed.diagnostics):
         raise ProviderFailure("invalid_segmentation")
     frames = {frame.frame_index: frame for frame in media.frames}
     boxes: dict[tuple[int, str], SegmentationBoxRecord] = {}
@@ -117,8 +142,7 @@ def normalize_output(
             raise ProviderFailure("invalid_track_id")
         key = (index, record.object_id)
         target = boxes if isinstance(record, SegmentationBoxRecord) else masks
-        if key in target:
-            raise ProviderFailure("duplicate_frame_object")
+        # A re-emitted (frame, object) is the official parser's next revision; the latest wins.
         target[key] = record
     if boxes.keys() != masks.keys():
         raise ProviderFailure("unpaired_geometry")
@@ -132,18 +156,22 @@ def normalize_output(
         bounds = mask.bounds
         if (bounds.left, bounds.top, bounds.right, bounds.bottom) != (box.left, box.top, box.right, box.bottom):
             raise ProviderFailure("mask_alignment_mismatch")
-        # This slice supports exact box-local pixels only. Never silently stretch
-        # a differently sized mask onto a box or substitute another frame.
-        if (mask.mask.width, mask.mask.height) != (box.right - box.left, box.bottom - box.top):
-            raise ProviderFailure("mask_alignment_mismatch")
+        # The raster is box-local (origin x=0;y=0 at the box corner) but Meta does not
+        # promise it is at the box's pixel extent; a differently sized raster is
+        # resampled onto the box, never placed on another frame or offset.
+        box_width, box_height = box.right - box.left, box.bottom - box.top
         try:
             raster = decode_mask_to_raster(mask.mask)
+            if (mask.mask.width, mask.mask.height) != (box_width, box_height):
+                logging.warning("SAM mask resampled onto box: raster=%dx%d box=%dx%d frame=%dx%d",
+                                mask.mask.width, mask.mask.height, box_width, box_height, width, height)
+                raster = _resample(raster, mask.mask.width, mask.mask.height, box_width, box_height)
             observation = SegmentObservation(
                 track_id=key[1], frame_index=key[0], frame_key=frame.frame_key,
                 timestamp_ms=frame.timestamp_ms, frame_width=width, frame_height=height,
                 bbox={"x": box.left / width, "y": box.top / height,
-                      "w": (box.right - box.left) / width, "h": (box.bottom - box.top) / height},
-                mask=MaskRaster(width=mask.mask.width, height=mask.mask.height, pixels=raster),
+                      "w": box_width / width, "h": box_height / height},
+                mask=MaskRaster(width=box_width, height=box_height, pixels=raster),
                 confidence=box.confidence,
             )
         except Exception:

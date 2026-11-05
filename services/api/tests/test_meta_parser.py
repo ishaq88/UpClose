@@ -97,10 +97,28 @@ def test_diagnostics_reject_partial_success() -> None:
         normalize_output(output, media(), "test", REQUEST, usage=ProviderUsage())
 
 
-def test_duplicate_frame_track_rejected() -> None:
-    output = "\n".join([RESPONSES["image"].output_text] * 2)
-    with pytest.raises(ProviderFailure, match="duplicate_frame_object"):
-        normalize_output(output, media(), "test", REQUEST, usage=ProviderUsage())
+def test_repeated_frame_track_keeps_latest_revision() -> None:
+    # The official parser numbers a re-emitted (frame, object) as the next revision.
+    first = RESPONSES["image"].output_text
+    later = first.replace("x1=1;y1=0;x2=2;y2=1", "x1=0;y1=0;x2=1;y2=1")
+    result = normalize_output(first + "\n" + later, media(), "test", REQUEST, usage=ProviderUsage())
+    observation, = result.observations
+    assert observation.bbox.x == 0
+
+
+@pytest.mark.parametrize("code,retryable", [
+    ("provider_timeout", True), ("provider_failed", True), ("incomplete_response", True),
+    ("mask_alignment_mismatch", False), ("invalid_segmentation", False), ("mask_limit", False),
+    ("malformed_record", False), ("unknown_source_frame", False),
+])
+def test_only_transport_failures_are_retried_because_responses_are_billed(code: str, retryable: bool) -> None:
+    assert ProviderFailure(code).retryable is retryable
+
+
+def test_parser_warnings_do_not_reject_kept_records() -> None:
+    output = RESPONSES["image"].output_text.replace("w=4;h=3", "w=4;h=3;future=1")
+    observation, = normalize_output(output, media(), "test", REQUEST, usage=ProviderUsage()).observations
+    assert observation.mask.pixels == bytes([1, 0, 0, 1])
 
 
 def test_confidence_optional_and_uncalibrated() -> None:
@@ -166,10 +184,20 @@ def test_quota_preflight_happens_before_official_mask_decode(monkeypatch: pytest
         normalize_output(RESPONSES["image"].output_text, media(), "test", REQUEST, usage=ProviderUsage())
 
 
-def test_mask_raster_must_match_exact_local_box_extent() -> None:
+def test_box_local_mask_at_other_resolution_is_resampled_onto_box() -> None:
+    # 2x2 diagonal raster on a 4x2 box: nearest-neighbour keeps it binary and box-local.
+    output = RESPONSES["image"].output_text.replace("x1=1;y1=0;x2=2;y2=1", "x1=0;y1=0;x2=3;y2=1")
+    observation, = normalize_output(output, media(), "test", REQUEST, usage=ProviderUsage()).observations
+    assert (observation.mask.width, observation.mask.height) == (4, 2)
+    assert observation.mask.pixels == bytes([1, 1, 0, 0, 0, 0, 1, 1])
+    assert observation.bbox.model_dump() == {"x": 0.0, "y": 0.0, "w": 1.0, "h": 2 / 3}
+
+
+def test_downsampled_mask_on_odd_box_extent_is_resampled() -> None:
     output = RESPONSES["image"].output_text.replace("x2=2", "x2=3")
-    with pytest.raises(ProviderFailure, match="mask_alignment_mismatch"):
-        normalize_output(output, media(), "test", REQUEST, usage=ProviderUsage())
+    observation, = normalize_output(output, media(), "test", REQUEST, usage=ProviderUsage()).observations
+    assert (observation.mask.width, observation.mask.height) == (3, 2)
+    assert observation.mask.pixels == bytes([1, 1, 0, 0, 0, 1])
 
 
 def test_video_documented_track_cap_is_explicit() -> None:

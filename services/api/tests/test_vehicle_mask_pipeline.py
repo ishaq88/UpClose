@@ -50,6 +50,8 @@ class RecordingProvider:
         self.calls = []
         self.damage_failures = 0
         self.mask_failures = 0
+        self.reject = None  # "vehicle" or "damage": billed response our parser rejects
+        self.rejected = []
         self.budget = None
 
     def segment(self, media, prompt, request_id):
@@ -62,11 +64,15 @@ class RecordingProvider:
                 Observation.session_id == self.h.session_id, Observation.kind == "vehicle_mask")))
         if prompt == "vehicle":
             assert "/vehicle/" not in media.media_key
+            if self.reject == "vehicle":
+                self.rejected.append(prompt)
+                raise ProviderFailure("mask_alignment_mismatch")
             if self.mask_failures:
                 self.mask_failures -= 1
                 raise ProviderFailure("provider_timeout")
             result = SyntheticVehicleSegmenter().segment(media, prompt, request_id)
             if self.failure == "missing": result = result.model_copy(update={"observations": result.observations[:-1]})
+            if self.failure == "too_few": result = result.model_copy(update={"observations": result.observations[:len(result.observations) // 3]})
             if self.failure == "empty":
                 result = result.model_copy(update={"observations": tuple(item.model_copy(update={
                     "mask": item.mask.model_copy(update={"pixels": b"\x00" * len(item.mask.pixels)})}) for item in result.observations)})
@@ -87,6 +93,9 @@ class RecordingProvider:
                 with Image.open(io.BytesIO(output)) as image:
                     assert image.size == media.display_size
                     assert image.convert("RGB").getpixel((0, 0)) == BACKGROUND
+            if self.reject == "damage":
+                self.rejected.append(prompt)
+                raise ProviderFailure("invalid_segmentation")
             if self.damage_failures:
                 self.damage_failures -= 1
                 raise ProviderFailure("provider_timeout")
@@ -141,7 +150,19 @@ def test_unsupported_zones_have_no_mask_or_damage_calls(make, media_dir, scratch
     assert part(h, part_no).state == PartState.PROCESSED
 
 
-@pytest.mark.parametrize("failure", ["missing", "empty", "ambiguous"])
+@pytest.mark.parametrize("shape", ["missing", "ambiguous"])
+def test_documented_sam_gaps_and_track_changes_still_mask_the_vehicle(make, media_dir, scratch_root, shape):
+    # SAM emits no line for a frame without the car, and ids can change after occlusion.
+    h = setup(make, scratch_root)
+    provider = RecordingProvider(h, failure=shape)
+    pipe = pipe_for(h, provider)
+    upload(h, media_dir, 1)
+    pipe.drain()
+    assert len(rows(h, Observation, Observation.kind == "vehicle_mask")) == 1
+    assert any(prompt != "vehicle" for prompt, _ in provider.calls)
+
+
+@pytest.mark.parametrize("failure", ["empty", "too_few"])
 def test_failed_mask_terminates_dependents_without_damage_or_clean_coverage(make, media_dir, scratch_root, failure):
     h = setup(make, scratch_root)
     provider = RecordingProvider(h, failure=failure)
@@ -196,6 +217,25 @@ def test_restart_and_damage_retry_reuse_committed_group_a(make, media_dir, scrat
     assert same.id == marker.id and same.value == marker.value
     assert max(job.attempts for job in jobs(h, "segment")) == 2
     assert all(row.state == "succeeded" for row in rows(h, ConceptRun))
+
+
+
+@pytest.mark.parametrize("stage", ["vehicle", "damage"])
+def test_rejected_billed_response_is_not_paid_for_again(make, media_dir, scratch_root, stage):
+    h = setup(make, scratch_root)
+    provider = RecordingProvider(h)
+    provider.reject = stage
+    pipe = pipe_for(h, provider)
+    upload(h, media_dir, 1)
+    pipe.drain()
+    concept_runs = rows(h, ConceptRun)
+    if stage == "vehicle":
+        assert provider.rejected == ["vehicle"]
+    else:
+        assert len(provider.rejected) == len(concept_runs)  # one call per concept, no retries
+    assert concept_runs and all(row.state == "failed" for row in concept_runs)
+    assert all(row.state.value != "assessed" for row in coverage(h).values())
+    assert not findings(h)
 
 
 class RecordingBudget:

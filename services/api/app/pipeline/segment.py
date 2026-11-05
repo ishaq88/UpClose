@@ -426,6 +426,8 @@ class SegmentHandler:
             logging.warning("Segment request failed code=%s http_status=%s http_status_class=%s", failure.code, failure.http_status, failure.http_status_class)
             if failure.code in _NOT_RETRYABLE:
                 raise _Terminal(_NOT_RETRYABLE[failure.code], f"SEGMENT_{failure.code.upper()}") from None
+            if not failure.retryable:  # a billed response we reject would be rejected (and billed) again
+                raise _Terminal("failed", f"SEGMENT_{failure.code.upper()}"[:240]) from None
             raise _Retryable(f"SEGMENT_{failure.code.upper()}"[:240], _QUEUE_CODE.get(failure.code, "SCHEMA_INVALID")) from None
         coverage = None
         if plan.vehicle_mask is None and plan.mode == "video" and getattr(segmenter, "requires_budget", False):

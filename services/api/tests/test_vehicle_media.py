@@ -24,6 +24,11 @@ def observation(frame, **changes):
     return SegmentObservation(**values)
 
 
+def near(actual, expected, tolerance=20):
+    """Masked video is 4:2:0 H.264 like the proxy, so colours are close, not bit-exact."""
+    return all(abs(a - b) <= tolerance for a, b in zip(actual, expected))
+
+
 def image_source(tmp_path):
     source = tmp_path / "source.png"
     Image.new("RGB", (32, 24), (230, 12, 50)).save(source)
@@ -42,9 +47,9 @@ def test_image_exact_canvas_and_mask_hole(tmp_path):
     assert list((tmp_path / "scratch").iterdir()) == [result.path]
 
 
-@pytest.mark.parametrize("mutation", ["missing", "empty", "dimensions", "time", "key", "extent", "duplicate", "tracks", "track_identity"])
+@pytest.mark.parametrize("mutation", ["missing", "empty", "dimensions", "time", "key", "extent", "too_few_frames"])
 def test_invalid_masks_fail_closed(tmp_path, mutation):
-    media = reference("video", 2) if mutation in ("duplicate", "tracks") else reference()
+    media = reference("video", 3) if mutation == "too_few_frames" else reference()
     observations = [observation(frame) for frame in media.frames]
     if mutation == "missing": observations = []
     elif mutation == "empty": observations[0] = observation(media.frames[0], mask=MaskRaster(width=16, height=12, pixels=bytes(192)))
@@ -52,9 +57,7 @@ def test_invalid_masks_fail_closed(tmp_path, mutation):
     elif mutation == "time": observations[0] = observation(media.frames[0], timestamp_ms=1)
     elif mutation == "key": observations[0] = observation(media.frames[0], frame_key="wrong/key")
     elif mutation == "extent": observations[0] = observation(media.frames[0], mask=MaskRaster(width=1, height=1, pixels=b"\x01"))
-    elif mutation == "duplicate": observations[1] = observations[0]
-    elif mutation == "track_identity": observations[0] = observation(media.frames[0], track_id=" ")
-    else: observations[1] = observation(media.frames[1], track_id="other")
+    else: observations = observations[:1]  # vehicle visible in 1 of 3 frames
     with pytest.raises(MediaError):
         mask_vehicle_media(image_source(tmp_path), media, observations, tmp_path / "scratch", load_media_config())
     assert not (tmp_path / "scratch").exists()
@@ -83,10 +86,31 @@ def test_video_preserves_frame_identity_and_rational_timing(tmp_path):
     for i, frame in enumerate(frames):
         with Image.open(frame.path) as image:
             assert image.size == (32, 24)
-            assert image.getpixel((0, 0)) == BACKGROUND
-            assert image.getpixel((8, 6)) == (40 + i * 60, 10, 200)
-            assert image.getpixel((23, 17)) == BACKGROUND
+            assert near(image.getpixel((0, 0)), BACKGROUND)
+            assert near(image.getpixel((10, 8)), (40 + i * 60, 10, 200))
+            assert near(image.getpixel((28, 20)), BACKGROUND)
     assert list(scratch.iterdir()) == [result.path]
+
+
+def test_real_sam_shapes_select_largest_vehicle_and_blank_missing_frames(tmp_path):
+    # Real SAM output: a second parked car, a frame with no line, and a track id change.
+    config = load_media_config()
+    source = make_video(tmp_path)
+    media = reference("video", 3)
+    other_car = dict(track_id="9", bbox=BoundingBox(x=0, y=0, w=.25, h=.25),
+                     mask=MaskRaster(width=8, height=6, pixels=bytes([1] * 48)))
+    observations = [observation(media.frames[0], track_id="3"), observation(media.frames[0], **other_car),
+                    observation(media.frames[2], track_id="12")]
+    result = mask_vehicle_media(source, media, observations, tmp_path / "scratch", config)
+    frames = extract_frames(result.path, result.manifest, range(3), tmp_path, config, image_format="png")
+    pixels = []
+    for frame in frames:
+        with Image.open(frame.path) as image:
+            pixels.append((image.getpixel((2, 2)), image.getpixel((12, 10))))
+    expected = [(BACKGROUND, (40, 10, 200)),  # smaller car dropped, larger car kept
+                (BACKGROUND, BACKGROUND),  # no vehicle line: nothing assessable
+                (BACKGROUND, (160, 10, 200))]  # new track id still the vehicle
+    assert all(near(a, b) for got, want in zip(pixels, expected) for a, b in zip(got, want))
 
 
 @pytest.mark.parametrize("failure", ["timestamps", "frames", "geometry", "bytes", "scratch"])
@@ -180,9 +204,9 @@ def test_normalized_long_video_uses_bounded_batches(tmp_path, monkeypatch, secon
     for masked, unmasked in zip(output_frames, input_frames):
         with Image.open(masked.path) as image, Image.open(unmasked.path) as expected:
             assert image.size == expected.size == (1280, 720)
-            assert image.getpixel((0, 0)) == BACKGROUND
-            assert image.getpixel((320, 180)) == expected.getpixel((320, 180))
-            assert image.getpixel((960, 540)) == BACKGROUND
+            assert near(image.getpixel((0, 0)), BACKGROUND)
+            assert near(image.getpixel((320, 180)), expected.getpixel((320, 180)))
+            assert near(image.getpixel((960, 540)), BACKGROUND)
     assert list(scratch.iterdir()) == [result.path]
 
 
@@ -213,10 +237,11 @@ def test_masks_apply_to_exact_frame_across_batches(tmp_path):
     config = load_media_config().model_copy(update={"max_extract_frames": 1})
     media = reference("video", 3)
     observations = [observation(f) for f in media.frames]
-    # A distinct hole on each frame catches adjacent-mask reuse at batch edges.
+    # A distinct 4x4 hole (chroma-block aligned) on each frame catches adjacent-mask reuse at batch edges.
     for i, frame in enumerate(media.frames):
         pixels = bytearray([1] * 192)
-        pixels[i] = 0
+        for y in range(4):
+            pixels[y * 16 + 4 * i:y * 16 + 4 * i + 4] = bytes(4)
         observations[i] = observation(frame, mask=MaskRaster(width=16, height=12, pixels=bytes(pixels)))
     result = mask_vehicle_media(make_video(tmp_path), media, observations, tmp_path / "scratch", config)
     assert result.manifest is not None
@@ -225,8 +250,9 @@ def test_masks_apply_to_exact_frame_across_batches(tmp_path):
         frame = extract_frames(result.path, result.manifest, [i], tmp_path, config,
                                out_dir_name=f"check-{i}", image_format="png")[0]
         with Image.open(frame.path) as image:
-            for x in range(3):
-                assert image.getpixel((8 + x, 6)) == (BACKGROUND if x == i else (40 + i * 60, 10, 200))
+            # Lossy 4:2:0 blurs tiny holes, so assert where the hole is, not bit-exact pixels.
+            distance = [sum(abs(a - b) for a, b in zip(image.getpixel((9 + 4 * x, 7)), BACKGROUND)) for x in range(3)]
+            assert distance.index(min(distance)) == i
 
 
 def test_encoder_timeout_removes_partial_output(tmp_path, monkeypatch):

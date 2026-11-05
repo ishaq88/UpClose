@@ -16,6 +16,9 @@ from app.pipeline.media import (
 
 BACKGROUND = (128, 128, 128)
 DEFAULT_MAX_OUTPUT_BYTES = 24 * 1024 * 1024
+# Same codec profile as the proxy SAM already accepts. Lossless RGB measured 55 MiB for a
+# 46-frame 720p close-up (over the inline cap); 18 limits loss on this second-generation encode.
+MASKED_VIDEO_CRF = 18
 # Source and masked PNGs coexist only for one batch. PNG overhead is bounded by
 # allowing twice the RGB raster size per image, with a small fixed allowance.
 MAX_BATCH_SCRATCH_BYTES = 64 * 1024 * 1024
@@ -34,37 +37,52 @@ def _reject(detail: str) -> MediaError:
 
 
 def _validate_masks(media: MediaRef, observations: Sequence[SegmentObservation]) -> dict[int, SegmentObservation]:
+    """Select the inspected vehicle per frame: the largest non-empty mask.
+
+    SAM emits no line for a frame without a visible vehicle, may also segment other
+    parked cars, and track ids can change after occlusion. A frame without a selection
+    is masked to background, so no damage can be found there; too few frames fails closed.
+    """
     if media.rotation_degrees != 0:
         raise _reject("vehicle masking requires upright normalized media")
-    if len(observations) != len(media.frames) or len({item.track_id for item in observations}) != 1:
-        raise _reject("exactly one selected vehicle observation is required per frame")
-    if not observations[0].track_id.strip():
-        raise _reject("vehicle track identity is missing")
-    by_index = {item.frame_index: item for item in observations}
-    if len(by_index) != len(observations):
-        raise _reject("duplicate vehicle frame")
+    known = {frame.frame_index for frame in media.frames}
+    by_index: dict[int, SegmentObservation] = {}
+    for item in sorted(observations, key=lambda o: (o.frame_index, len(o.track_id), o.track_id)):
+        if item.frame_index not in known:
+            raise _reject("vehicle observation is not aligned with source frame")
+        area = sum(item.mask.pixels)
+        current = by_index.get(item.frame_index)
+        if area and (current is None or area > sum(current.mask.pixels)):
+            by_index[item.frame_index] = item
+    if not by_index or len(by_index) * 2 < len(media.frames):
+        raise _reject("vehicle is visible in too few frames")
     for frame in media.frames:
         item = by_index.get(frame.frame_index)
-        if item is None or (item.frame_key, item.timestamp_ms, item.frame_width, item.frame_height) != (
+        if item is None:
+            continue
+        if (item.frame_key, item.timestamp_ms, item.frame_width, item.frame_height) != (
             frame.frame_key, frame.timestamp_ms, media.stored_width, media.stored_height,
         ):
             raise _reject("vehicle observation is not aligned with source frame")
         left, top = round(item.bbox.x * item.frame_width), round(item.bbox.y * item.frame_height)
         right = round((item.bbox.x + item.bbox.w) * item.frame_width)
         bottom = round((item.bbox.y + item.bbox.h) * item.frame_height)
-        if (item.mask.width, item.mask.height) != (right - left, bottom - top) or not any(item.mask.pixels):
-            raise _reject("vehicle mask is empty or differs from box extent")
+        if (item.mask.width, item.mask.height) != (right - left, bottom - top):
+            raise _reject("vehicle mask differs from box extent")
     return by_index
 
 
-def _mask_image(source: Path, destination: Path, item: SegmentObservation) -> None:
+def _mask_image(source: Path, destination: Path, item: SegmentObservation | None,
+                size: tuple[int, int]) -> None:
+    """Keep the selected vehicle's pixels; with no selection the whole frame is background."""
     with Image.open(source) as image:
-        if image.size != (item.frame_width, item.frame_height) or getattr(image, "n_frames", 1) != 1:
+        if image.size != size or getattr(image, "n_frames", 1) != 1:
             raise _reject("source image geometry differs from vehicle observation")
         image.load()
         mask = Image.new("L", image.size, 0)
-        local = Image.frombytes("L", (item.mask.width, item.mask.height), bytes(pixel * 255 for pixel in item.mask.pixels))
-        mask.paste(local, (round(item.bbox.x * image.width), round(item.bbox.y * image.height)))
+        if item is not None:
+            local = Image.frombytes("L", (item.mask.width, item.mask.height), bytes(pixel * 255 for pixel in item.mask.pixels))
+            mask.paste(local, (round(item.bbox.x * image.width), round(item.bbox.y * image.height)))
         neutral = Image.new("RGB", image.size, BACKGROUND)
         neutral.paste(image.convert("RGB"), (0, 0), mask)
         neutral.save(destination, format="PNG")
@@ -82,7 +100,7 @@ def mask_vehicle_media(
     """Keep only the selected vehicle, retaining original canvas and every frame.
 
     Video must be normalized and its refs must cover every decoded frame in order.
-    Output is lossless RGB H.264, avoiding chroma or lossy boundary leakage. Rational
+    Video output is 4:2:0 H.264 like the proxy; still output is lossless PNG. Rational
     timestamps are checked after encoding; unrepresentable timing fails closed.
     The caller owns the returned file; all intermediates/partial outputs are removed.
     """
@@ -102,7 +120,7 @@ def mask_vehicle_media(
             work = Path(temporary)
             manifest = None
             if media_ref.kind == "image":
-                _mask_image(src, output, masks[0])
+                _mask_image(src, output, masks[0], (width, height))
             else:
                 info = probe(src, config, work)
                 if info.rotation.clockwise_degrees or (info.coded_width, info.coded_height) != (width, height):
@@ -156,7 +174,7 @@ def _mask_video_batches(
             lines = ["ffconcat version 1.0"]
             for index, frame in zip(range(start, stop), frames):
                 name = f"masked_{index:06d}.png"
-                _mask_image(frame.path, batch / name, masks[index])
+                _mask_image(frame.path, batch / name, masks.get(index), (original.width, original.height))
                 frame.path.unlink()
                 lines.extend([f"file {name}", f"option framerate {original.time_base_den}/{original.time_base_num}"])
                 if index + 1 < stop:
@@ -166,8 +184,10 @@ def _mask_video_batches(
             chunk = work / f"chunk_{start:06d}.mp4"
             _run_encode([
                 "-protocol_whitelist", "file", "-f", "concat", "-safe", "0", "-i", str(batch / "frames.txt"),
-                "-an", "-map_metadata", "-1", "-fps_mode", "passthrough", "-c:v", "libx264rgb",
-                "-crf", "0", "-preset", config.x264_preset, "-pix_fmt", "rgb24", "-threads", "1",
+                "-an", "-map_metadata", "-1", "-fps_mode", "passthrough", "-vf", "scale=out_color_matrix=bt709",
+                "-c:v", "libx264", "-crf", str(MASKED_VIDEO_CRF), "-preset", config.x264_preset,
+                "-profile:v", "high", "-pix_fmt", "yuv420p", "-colorspace", "bt709",
+                "-color_primaries", "bt709", "-color_trc", "bt709", "-threads", "1",
                 "-enc_time_base", f"{original.time_base_num}:{original.time_base_den}",
                 "-video_track_timescale", str(original.time_base_den),
             ], chunk, batch, _remaining_config(config, deadline), max_output_bytes)

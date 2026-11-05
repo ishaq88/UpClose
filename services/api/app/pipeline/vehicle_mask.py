@@ -150,8 +150,7 @@ class VehicleMaskHandler:
                 except StorageError:
                     pass
             terminal = isinstance(error, (ValueError, MediaError)) or (
-                isinstance(error, ProviderFailure) and error.code in {
-                    "budget_not_reserved", "standard_access_unverified", "model_unverified", "price_unverified"})
+                isinstance(error, ProviderFailure) and not error.retryable)
             if not terminal and lease.attempt < 3:
                 raise StageFailure(Failure("TRANSIENT")) from None
             if isinstance(error, ProviderFailure):
