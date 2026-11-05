@@ -49,7 +49,8 @@ function useActiveSection(): string {
 export function ReportView({ report, frameUrl, resolveFrame }: Props): ReactElement {
   const findings = useMemo(() => orderFindings(report.findings), [report.findings]);
   const numberOf = useMemo(() => new Map(findings.map((f, i) => [f.id, i + 1])), [findings]);
-  const v = verdict(findings);
+  const possible = report.candidates?.length ?? 0;
+  const v = verdict(findings, possible);
   const zones = report.scores.zones;
   const lowest = lowestZone(zones);
   const scored = scoredZones(zones);
@@ -68,7 +69,7 @@ export function ReportView({ report, frameUrl, resolveFrame }: Props): ReactElem
   const contradicted = report.claims.filter((c) => c.verdict === 'contradicted');
 
   return (
-    <div className="rep">
+    <div className="rep-scope"><div className="rep">
       <nav className="toc" aria-label="Report sections">
         {SECTIONS.map(([id, label]) => <a key={id} href={`#${id}`} className={active === id ? 'on' : undefined}>{label}</a>)}
       </nav>
@@ -116,7 +117,7 @@ export function ReportView({ report, frameUrl, resolveFrame }: Props): ReactElem
 
         <section className="rsec" id="r-found" aria-labelledby="found-h">
           <h2 id="found-h">What we found</h2>
-          <p className="sub">{findings.length} {findings.length === 1 ? 'finding' : 'findings'}, most serious first. Tap a frame to see it larger.</p>
+          <p className="sub">{findings.length} confirmed {findings.length === 1 ? 'finding' : 'findings'}{possible ? `, ${possible} possible ${possible === 1 ? 'issue' : 'issues'} to check yourself` : ''}, most serious first. Tap a frame to see it larger.</p>
           <div className="found">
             <div className="map-col">
               <Suspense fallback={<div className="map"><span className="map-status">Loading map…</span></div>}>
@@ -226,6 +227,6 @@ export function ReportView({ report, frameUrl, resolveFrame }: Props): ReactElem
           </details>
         </section>
       </div>
-    </div>
+    </div></div>
   );
 }

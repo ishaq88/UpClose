@@ -70,7 +70,8 @@ export interface Verdict {
   advice: string;
 }
 
-export function verdict(findings: readonly PaidFinding[]): Verdict {
+/** `possible` counts unverified candidates: never call a report with candidates "Nothing found". */
+export function verdict(findings: readonly PaidFinding[], possible = 0): Verdict {
   const serious = findings.filter(isSerious).length;
   const minor = findings.length - serious;
   const minorText = `${minor} minor ${minor === 1 ? 'finding' : 'findings'}`;
@@ -82,6 +83,13 @@ export function verdict(findings: readonly PaidFinding[]): Verdict {
     };
   }
   if (minor > 0) return { serious, minor, headline: minorText.replace(/^./, (c) => c.toUpperCase()), advice: 'Nothing we found is flagged as serious. Check the zones we couldn’t see.' };
+  if (possible > 0) {
+    return {
+      serious, minor,
+      headline: `${possible} possible ${possible === 1 ? 'issue' : 'issues'} to check`,
+      advice: `We spotted ${possible === 1 ? 'something' : 'spots'} we couldn’t confirm. Look at ${possible === 1 ? 'it' : 'them'} yourself or ask a mechanic before you agree a price.`,
+    };
+  }
   return { serious, minor, headline: 'Nothing found', advice: 'Nothing visible in the zones we checked. Check the zones we couldn’t see.' };
 }
 

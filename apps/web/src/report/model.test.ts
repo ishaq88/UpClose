@@ -24,6 +24,8 @@ describe('report model', () => {
     expect(isSerious(ordered[0]!)).toBe(true);
     expect(verdict(ordered).headline).toBe('1 serious issue');
     expect(verdict([]).headline).toBe('Nothing found');
+    expect(verdict([], 5).headline).toBe('5 possible issues to check');
+    expect(verdict([finding({ flags: [] })], 5).headline).toBe('1 minor finding');
     expect(verdict([finding({ flags: [] })]).headline).toBe('1 minor finding');
   });
 
