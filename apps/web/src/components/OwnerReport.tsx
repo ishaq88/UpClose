@@ -29,8 +29,6 @@ export interface OwnerReportProps {
   slug: string;
   onUnauthorized: () => void;
   onRefresh: () => void;
-  /** Inside the capture screen: no page title or breadcrumb. */
-  embedded?: boolean;
   /** Base poll interval for a report that is still building. */
   pollMs?: number;
   navigate?: (url: string) => void;
@@ -41,13 +39,13 @@ export interface OwnerReportProps {
  * fetched one by one as data URLs (token in a header). Free reports show the driver-side result with
  * unlock. A building report polls with backoff. Which of these shows is decided only by the server's response.
  */
-export function OwnerReport({ api, slug, onUnauthorized, onRefresh, embedded = false, pollMs = SESSION_POLL_MS, navigate }: OwnerReportProps): ReactElement {
+export function OwnerReport({ api, slug, onUnauthorized, onRefresh, pollMs = SESSION_POLL_MS, navigate }: OwnerReportProps): ReactElement {
   const [report, setReport] = useState<Loaded | null>(null);
   const [error, setError] = useState<UiError | null>(null);
   const [fatal, setFatal] = useState(false);
   const [attempt, setAttempt] = useState(0);
   // Remember a checkout return once, so a still-free report is re-read while the provider's confirmation arrives.
-  const [awaiting, setAwaiting] = useState(() => !embedded && pendingCheckout() === slug);
+  const [awaiting, setAwaiting] = useState(() => pendingCheckout() === slug);
   const [gaveUp, setGaveUp] = useState(false);
   const awaitingRef = useRef(awaiting);
   awaitingRef.current = awaiting;
@@ -128,17 +126,15 @@ export function OwnerReport({ api, slug, onUnauthorized, onRefresh, embedded = f
 
   return (
     <div className="res-col" data-testid="owner-report">
-      {!embedded && (
-        <header className="res-head">
-          <nav className="crumbs" aria-label="Breadcrumb"><a href="/reports">My reports</a><span aria-hidden="true">/</span><span>{label ?? 'Report'}</span></nav>
-          <h1 className="page-title">{label ?? 'Your report'}</h1>
-        </header>
-      )}
+      <header className="res-head">
+        <nav className="crumbs" aria-label="Breadcrumb"><a href="/reports">My reports</a><span aria-hidden="true">/</span><span>{label ?? 'Report'}</span></nav>
+        <h1 className="page-title">{label ?? 'Your report'}</h1>
+      </header>
       {error && (
         <ResultError error={error}>
           {!fatal && <button type="button" className="btn btn-sm btn-ghost" onClick={retry}>Retry report</button>}
-          {fatal && !embedded && <a className="btn btn-sm btn-ghost" href="/signin">Sign in</a>}
-          {fatal && !embedded && <a className="textlink" href="/reports">My reports</a>}
+          {fatal && <a className="btn btn-sm btn-ghost" href="/signin">Sign in</a>}
+          {fatal && <a className="textlink" href="/reports">My reports</a>}
         </ResultError>
       )}
       {report === null && !error && <p role="status" className="muted">Loading your report…</p>}

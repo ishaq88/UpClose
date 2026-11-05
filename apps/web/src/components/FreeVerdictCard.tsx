@@ -109,7 +109,7 @@ export function FreeVerdictCard({ data, layout, unlock }: FreeVerdictCardProps):
   if (layout === 'inline') {
     return <div className="free-inline">{main}{(unlock || data.locked_zones.length > 0) && aside}</div>;
   }
-  return <div className="free">{main}{aside}</div>;
+  return <div className="free-scope"><div className="free">{main}{aside}</div></div>;
 }
 
 function ScoreBlock({ score, coverage }: { score: number | null; coverage: PublicCoverage | undefined }): ReactElement {

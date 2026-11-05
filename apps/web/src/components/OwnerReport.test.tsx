@@ -219,21 +219,16 @@ describe('share with mechanic', () => {
   });
 });
 
-describe('free vs paid scope in the progress panel', () => {
-  it('clears the paid report when scope drops to free and shows the free one', async () => {
-    let paid = true;
-    const api = apiFor([{ match: REPORT_URL, respond: () => (paid ? json(SAMPLE_REPORT) : json(FREE)) }, FRAMES]);
+describe('opening the report from the progress panel', () => {
+  it('goes to the report page instead of rendering it inline', () => {
+    const navigate = vi.fn();
+    const api = apiFor([]);
     const progress = { state: 'finalized' as const, parts: [], free_verdict: null, report: { slug: 'owner-slug', state: 'ready' as const, unlocked: true } };
-    const props = { api, onUnauthorized: noop, onRefresh: noop };
-    const { rerender } = render(<ProgressPanel {...props} progress={progress} />);
+    render(<ProgressPanel api={api} onUnauthorized={noop} onRefresh={noop} navigate={navigate} progress={progress} />);
     expect(screen.queryByRole('button', { name: /Unlock full report/ })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Open your full report' }));
-    expect(await screen.findByRole('heading', { name: '1 serious issue' })).toBeTruthy();
-    paid = false;
-    rerender(<ProgressPanel {...props} progress={{ ...progress, report: { ...progress.report, unlocked: false } }} />);
-    expect(screen.queryByTestId('share-control')).toBeNull();
-    expect(screen.getAllByRole('button', { name: /Unlock full report/ }).length).toBeGreaterThan(0);
-    expect(await screen.findByTestId('verdict-line')).toBeTruthy();
+    expect(navigate).toHaveBeenCalledWith('/report/owner-slug');
+    expect(screen.queryByTestId('owner-report')).toBeNull();
   });
 });
 

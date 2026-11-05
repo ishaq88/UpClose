@@ -1,4 +1,4 @@
-import { useState, type ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import type { Api, PartSummary, ProgressResponse } from '../api/client';
 import { zoneTitle } from '../progress/labels';
 import { describeReason, isQualityReason } from '../progress/reasons';
@@ -8,7 +8,6 @@ import { defaultNavigate, isSafeCheckoutUrl } from '../results/checkout';
 import { ResultError } from '../results/ResultError';
 import { useUnlock } from '../results/useUnlock';
 import '../results/results.css';
-import { OwnerReport } from './OwnerReport';
 
 export { isSafeCheckoutUrl };
 
@@ -121,23 +120,23 @@ function ReportStatus(props: ReportStatusProps): ReactElement {
 }
 
 function ReadyReport({ api, slug, unlocked, onRefresh, onUnauthorized, navigate }: ReportStatusProps & { slug: string; unlocked: boolean }): ReactElement {
-  const [viewing, setViewing] = useState(false);
+  // The report opens on its own page, where it gets the full width; the owner token stays in this tab's storage.
+  const open = (): void => navigate(`/report/${encodeURIComponent(slug)}`);
   const unlock = useUnlock({
     api, slug, navigate, onUnauthorized, onFailed: onRefresh,
-    onUnlocked: () => { setViewing(true); onRefresh(); }, // demo stand-in (DEMO_FREE_UNLOCK): the server already granted it
+    onUnlocked: open, // demo stand-in (DEMO_FREE_UNLOCK): the server already granted it
   });
   return (
     <>
       <p role="status" style={{ fontWeight: 700 }}>{unlocked ? 'Your report is ready and unlocked.' : 'Your report is ready.'}</p>
       <div className="res-actions" style={{ marginTop: 0 }}>
-        <button type="button" className="btn btn-sm btn-ghost" onClick={() => { setViewing(false); onRefresh(); }}>Refresh report status</button>
-        <button type="button" className="btn btn-sm btn-ghost" onClick={() => setViewing(!viewing)}>{viewing ? 'Close report' : unlocked ? 'Open your full report' : 'Open your free report'}</button>
+        <button type="button" className="btn btn-sm btn-ghost" onClick={onRefresh}>Refresh report status</button>
+        <button type="button" className="btn btn-sm btn-ghost" onClick={open}>{unlocked ? 'Open your full report' : 'Open your free report'}</button>
         {!unlocked && <button type="button" className="btn btn-sm" disabled={unlock.busy} onClick={unlock.start}>
           {unlock.busy ? 'Opening checkout…' : 'Unlock full report · $19'}
         </button>}
       </div>
       {unlock.error && <ResultError error={unlock.error}><button type="button" className="textlink" onClick={unlock.dismiss}>Dismiss</button></ResultError>}
-      {viewing && <OwnerReport key={`${slug}:${unlocked}`} api={api} slug={slug} onUnauthorized={onUnauthorized} onRefresh={onRefresh} embedded />}
       <p className="res-note">
         Payment is handled by our payment provider. Returning from checkout does not unlock anything by itself; the report unlocks only after the server verifies the payment.
       </p>
